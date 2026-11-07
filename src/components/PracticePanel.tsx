@@ -16,6 +16,8 @@ interface PracticePanelProps {
   beatsPerBar: number;
   onBeatsPerBarChange: (n: number) => void;
   onTap: () => void;
+  /** Shift the bar lines by whole beats */
+  onShiftDownbeat: (beats: number) => void;
   onDetectTempo: () => void;
   tempoStatus: string | null;
   canDetectTempo: boolean;
@@ -41,6 +43,7 @@ export const PracticePanel: React.FC<PracticePanelProps> = ({
   beatsPerBar,
   onBeatsPerBarChange,
   onTap,
+  onShiftDownbeat,
   onDetectTempo,
   tempoStatus,
   canDetectTempo,
@@ -156,6 +159,21 @@ export const PracticePanel: React.FC<PracticePanelProps> = ({
           <Wand2 className="w-3.5 h-3.5" />
           Detect
         </button>
+        <div className="flex items-center" title="Move the bar start by one beat (if the first beat of the bar is in the wrong place)">
+          <button
+            onClick={() => onShiftDownbeat(-1)}
+            className="px-1.5 py-0.5 rounded-l bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
+          >
+            ‹
+          </button>
+          <span className="px-1.5 py-0.5 bg-slate-800/60 text-[10px] text-slate-400">Bar</span>
+          <button
+            onClick={() => onShiftDownbeat(1)}
+            className="px-1.5 py-0.5 rounded-r bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
+          >
+            ›
+          </button>
+        </div>
         {tempoStatus && <span className="text-[10px] text-slate-400 font-mono">{tempoStatus}</span>}
       </div>
 

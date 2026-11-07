@@ -23,6 +23,99 @@ const silence = (f: PitchFrame): PitchFrame => ({
   strength: 0
 });
 
+const shiftFrame = (f: PitchFrame, semitones: number): PitchFrame => {
+  const exactMidi = f.exactMidi + semitones;
+  const nearestMidi = Math.round(exactMidi);
+  return {
+    ...f,
+    exactMidi,
+    nearestMidi,
+    frequency: f.frequency * Math.pow(2, semitones / 12),
+    noteName: `${NOTE_NAMES[((nearestMidi % 12) + 12) % 12]}${Math.floor(nearestMidi / 12) - 1}`,
+    cents: Math.round((exactMidi - nearestMidi) * 1000) / 10
+  };
+};
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+/** Jumps typical of pitch-detector errors: octave, octave + fifth, two octaves. */
+const ERROR_JUMPS = [12, 19, 24];
+
+/**
+ * Suppresses flickering octave errors in live pitch while still following real octave leaps.
+ *
+ * A frame that sits an octave (or octave+fifth / two octaves) away from the recent pitch is
+ * shifted back into the current register. Only when the new register persists for
+ * `confirmFrames` consecutive frames (~185 ms) is it accepted - then the held-back frames are
+ * moved to the new register as well, so an intentional leap is drawn correctly.
+ */
+export class OctaveStabilizer {
+  private recent: number[] = [];
+  private held: number[] = [];     // indices of frames shifted while a jump is pending
+  private pendingShift = 0;
+  private silentFrames = 0;
+
+  constructor(private confirmFrames = 4, private resetAfterSilence = 6) {}
+
+  reset() {
+    this.recent = [];
+    this.held = [];
+    this.pendingShift = 0;
+    this.silentFrames = 0;
+  }
+
+  /** Call after removing `count` frames from the start of the array. */
+  shiftIndices(count: number) {
+    this.held = this.held.map(i => i - count).filter(i => i >= 0);
+  }
+
+  /** Stabilizes the last frame of `frames` in place. */
+  process(frames: PitchFrame[]) {
+    const i = frames.length - 1;
+    const f = frames[i];
+    if (!f || !f.voiced || f.frequency <= 0) {
+      if (++this.silentFrames >= this.resetAfterSilence) this.reset();
+      return;
+    }
+    this.silentFrames = 0;
+
+    if (this.recent.length >= 3) {
+      const sorted = [...this.recent].sort((a, b) => a - b);
+      const ref = sorted[sorted.length >> 1];
+      const d = f.exactMidi - ref;
+      const jump = ERROR_JUMPS.find(j => Math.abs(Math.abs(d) - j) < 1.0);
+      if (jump) {
+        const shift = Math.sign(d) * jump;
+        if (this.held.length > 0 && shift !== this.pendingShift) this.held = [];
+        this.pendingShift = shift;
+
+        if (this.held.length + 1 < this.confirmFrames) {
+          // Not confirmed yet: keep it in the current register
+          frames[i] = shiftFrame(f, -shift);
+          this.held.push(i);
+          this.push(frames[i].exactMidi);
+          return;
+        }
+        // Confirmed real leap: restore the held frames and follow the new register
+        for (const k of this.held) {
+          if (frames[k]?.voiced) frames[k] = shiftFrame(frames[k], shift);
+        }
+        this.recent = this.held.filter(k => frames[k]?.voiced).map(k => frames[k].exactMidi);
+        this.held = [];
+        this.push(f.exactMidi);
+        return;
+      }
+    }
+
+    this.held = [];
+    this.push(f.exactMidi);
+  }
+
+  private push(midi: number) {
+    this.recent.push(midi);
+    if (this.recent.length > 7) this.recent.shift();
+  }
+}
+
 export function filterLatestFrames(frames: PitchFrame[]) {
   const n = frames.length;
   if (n < 3) return;

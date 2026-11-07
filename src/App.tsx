@@ -12,7 +12,7 @@ import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
 import { BatchPitchExtractor, PITCH_ANALYSIS_VERSION } from './audio/BatchPitchExtractor';
 import { PitchComparator, CoachingFeedback } from './audio/PitchComparator';
 import { detectTempo } from './audio/TempoDetector';
-import { filterLatestFrames } from './audio/LivePitchFilter';
+import { filterLatestFrames, OctaveStabilizer } from './audio/LivePitchFilter';
 import {
   MusicalHarmonyEngine,
   MusicalMode,
@@ -113,6 +113,7 @@ export function App() {
   const [countInCustomBeats, setCountInCustomBeats] = useState(4);
   const [countInLeft, setCountInLeft] = useState(0);
   const tapTimesRef = useRef<number[]>([]);
+  const tempoTouchedRef = useRef(false); // tempo typed/tapped by the user -> no auto-detection
 
   // Microphone & Real-time Pitch State
   const [isMicActive, setIsMicActive] = useState(false);
@@ -228,6 +229,27 @@ export function App() {
     };
   }, []);
 
+  // ---- Live pitch clean-up ----
+  // Each live frame list has its own octave stabilizer (flickering octave errors are held back,
+  // real leaps are followed after ~185 ms).
+  const takeStabRef = useRef(new OctaveStabilizer());
+  const tunerStabRef = useRef(new OctaveStabilizer());
+  const idleStabRef = useRef(new OctaveStabilizer());
+  const idleFramesRef = useRef<PitchFrame[]>([]); // mic frames while not recording (coach display only)
+
+  /** Appends a live frame, cleans it up, and returns the cleaned latest frame. */
+  const appendLive = (frames: PitchFrame[], frame: PitchFrame, stab: OctaveStabilizer, maxLen: number, trim: number) => {
+    frames.push(frame);
+    stab.process(frames);
+    filterLatestFrames(frames);
+    const cleaned = frames[frames.length - 1];
+    if (frames.length > maxLen) {
+      frames.splice(0, trim);
+      stab.shiftIndices(trim);
+    }
+    return cleaned;
+  };
+
   // ---- Sung takes ----
   const startNewTake = useCallback(() => {
     const n = takeCounterRef.current++;
@@ -236,11 +258,12 @@ export function App() {
     const next = [...kept, { id: n, color, frames: [] as PitchFrame[] }];
     takesRef.current = next.slice(-MAX_TAKES);
     forceNewTakeRef.current = false;
+    takeStabRef.current.reset();
     setTakesVersion(v => v + 1);
     return takesRef.current[takesRef.current.length - 1];
   }, []);
 
-  const recordToTake = useCallback((frame: PitchFrame) => {
+  const recordToTake = useCallback((frame: PitchFrame): PitchFrame => {
     const takes = takesRef.current;
     let take = takes[takes.length - 1];
     const last = take?.frames[take.frames.length - 1];
@@ -249,14 +272,14 @@ export function App() {
     if (!take || forceNewTakeRef.current || !continuous) {
       take = startNewTake();
     }
-    take.frames.push(frame);
-    filterLatestFrames(take.frames);
-  }, [startNewTake]);
+    return appendLive(take.frames, frame, takeStabRef.current, Number.POSITIVE_INFINITY, 0);
+  }, [startNewTake]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearTakes = useCallback(() => {
     takesRef.current = [];
     takeCounterRef.current = 0;
     tunerTakeRef.current.frames.length = 0;
+    tunerStabRef.current.reset();
     forceNewTakeRef.current = true;
     comparatorRef.current.resetScore();
     setTakesVersion(v => v + 1);
@@ -269,9 +292,7 @@ export function App() {
       const start = tunerClockStartRef.current ?? performance.now();
       const t = (performance.now() - start) / 1000 - MIC_ANALYSIS_DELAY;
       const take = tunerTakeRef.current;
-      take.frames.push({ ...frame, timestamp: t });
-      filterLatestFrames(take.frames);
-      if (take.frames.length > 4000) take.frames.splice(0, 1500);
+      frame = appendLive(take.frames, { ...frame, timestamp: t }, tunerStabRef.current, 4000, 1500);
 
       if (!frame.voiced || frame.frequency <= 0) {
         setCoachingFeedback(comparatorRef.current.compare(frame, 0, 0, '—'));
@@ -285,13 +306,20 @@ export function App() {
       const fb = comparatorRef.current.compare(frame, targetMidi, PraatPitchEngine.midiToFrequency(targetMidi), name);
       setCoachingFeedback({ ...fb, micNote: name });
       setTunerNote(nearest);
-      setTunerRange(r => (nearest < r.min + 3 || nearest > r.max - 3) ? { min: nearest - 12, max: nearest + 12 } : r);
+      // Re-centre the view only when the recent (median) pitch leaves it, not on single frames
+      const recent = take.frames.slice(-8).filter(f => f.voiced).map(f => f.exactMidi).sort((a, b) => a - b);
+      if (recent.length >= 4) {
+        const centre = Math.round(recent[recent.length >> 1]);
+        setTunerRange(r => (centre < r.min + 3 || centre > r.max - 3) ? { min: centre - 12, max: centre + 12 } : r);
+      }
       return;
     }
 
     const mixer = mixerRef.current;
     const running = !!mixer && mixer.isRunning();
-    if (running) recordToTake(frame);
+    frame = running
+      ? recordToTake(frame)
+      : appendLive(idleFramesRef.current, frame, idleStabRef.current, 200, 100);
     let target = getTargetAt(running ? frame.timestamp : currentTimeRef.current);
     if (anyOctaveRef.current && frame.voiced && frame.exactMidi > 0 && target.targetMidi > 0) {
       // Move the target by whole octaves to the octave closest to what is being sung
@@ -571,6 +599,7 @@ export function App() {
       const median = intervals[Math.floor(intervals.length / 2)];
       // Taps are in song tempo at the current playback speed
       const tapped = Math.round((60000 / median) / speed);
+      tempoTouchedRef.current = true;
       setBpm(Math.max(30, Math.min(260, tapped)));
       setTempoStatus(`Tap: ${tapped} BPM (${taps.length})`);
       // While playing, align the beat grid to the taps
@@ -580,18 +609,34 @@ export function App() {
     }
   };
 
-  const handleDetectTempo = () => {
+  const runTempoDetection = (manual: boolean) => {
     const track = mainTrackRef.current ?? tracksRef.current.find(t => t.audioBuffer) ?? null;
     if (!track?.audioBuffer) return;
-    const result = detectTempo(track.audioBuffer, track.pitchFrames);
+    const result = detectTempo(track.audioBuffer, track.pitchFrames, beatsPerBar);
     if (!result) {
-      setTempoStatus('Could not detect tempo');
+      if (manual) setTempoStatus('Could not detect tempo');
       return;
     }
     const rounded = Math.abs(result.bpm - Math.round(result.bpm)) < 0.6 ? Math.round(result.bpm) : result.bpm;
+    if (manual) tempoTouchedRef.current = false;
     setBpm(rounded);
     setFirstBeat(result.firstBeat);
-    setTempoStatus(`Detected ${rounded} BPM${result.confidence < 0.1 ? ' (uncertain)' : ''}`);
+    setTempoStatus(`${manual ? 'Detected' : 'Auto'} ${rounded} BPM${result.confidence < 0.1 ? ' (uncertain)' : ''}`);
+  };
+  const handleDetectTempo = () => runTempoDetection(true);
+
+  // Auto-detect tempo & bar position for a newly loaded reference track (or a new time signature),
+  // unless the user has set the tempo themselves
+  const mainBuffer = mainTrack?.audioBuffer ?? null;
+  const mainFrames = mainTrack?.pitchFrames ?? null;
+  useEffect(() => {
+    if (!mainBuffer || !mainFrames || mainFrames.length === 0 || tempoTouchedRef.current) return;
+    runTempoDetection(false);
+  }, [mainBuffer, mainFrames, beatsPerBar]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Moves the bar lines by whole beats (when the detected bar start is on the wrong beat). */
+  const shiftDownbeat = (beats: number) => {
+    setFirstBeat(fb => fb + (beats * 60) / bpm);
   };
 
   // ---- Mode ----
@@ -604,6 +649,7 @@ export function App() {
         setIsPlaying(false);
       }
       tunerTakeRef.current = { id: -1, color: TAKE_COLORS[0], frames: [] };
+      tunerStabRef.current.reset();
       setTunerClockStart(performance.now());
       setTunerNote(null);
       comparatorRef.current.resetScore();
@@ -987,7 +1033,11 @@ export function App() {
             metronomeOn={metronomeOn}
             onToggleMetronome={() => setMetronomeOn(m => !m)}
             bpm={bpm}
-            onBpmChange={setBpm}
+            onBpmChange={(v) => {
+              tempoTouchedRef.current = true;
+              setBpm(v);
+            }}
+            onShiftDownbeat={shiftDownbeat}
             beatsPerBar={beatsPerBar}
             onBeatsPerBarChange={setBeatsPerBar}
             onTap={handleTap}

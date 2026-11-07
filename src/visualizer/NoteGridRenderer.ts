@@ -489,13 +489,25 @@ export class NoteGridRenderer {
           }
         }
 
-        // Onset: sudden intensity rise (re-attack of the same pitch)
+        // Onset: sudden intensity rise (re-attack of the same pitch). Analysis windows overlap,
+        // so an attack rises over several frames: compare with the level ~50 ms earlier and
+        // split where the rise began.
         const prevFrame = current[current.length - 1];
-        if (current.length >= 8 && f.intensity > 2.0 * prevFrame.intensity && prevFrame.intensity > 0.002) {
-          flush(current);
-          current = [f];
-          currentStartIdx = i;
-          continue;
+        const LOOKBACK = 5;
+        if (current.length >= 8 && f.intensity > prevFrame.intensity) {
+          const recent = current.slice(-LOOKBACK);
+          let minIdx = 0;
+          for (let k = 1; k < recent.length; k++) if (recent[k].intensity < recent[minIdx].intensity) minIdx = k;
+          const base = recent[minIdx].intensity;
+          if (base > 0.002 && f.intensity > 1.8 * base) {
+            const cut = current.length - LOOKBACK + minIdx + 1;
+            const head = current.slice(0, cut);
+            const tail = current.slice(cut);
+            flush(head);
+            current = [...tail, f];
+            currentStartIdx = i - tail.length;
+            continue;
+          }
         }
       }
 
