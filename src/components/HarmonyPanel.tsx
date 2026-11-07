@@ -7,7 +7,7 @@ import {
   DetectedKeyResult 
 } from '../audio/MusicalHarmonyEngine';
 
-interface HarmonyPanelProps {
+export interface HarmonyPanelProps {
   activePreset: HarmonyPreset;
   onSelectPreset: (preset: HarmonyPreset) => void;
 
@@ -25,6 +25,9 @@ interface HarmonyPanelProps {
 
   anyOctave: boolean;
   onToggleAnyOctave: () => void;
+
+  /** Render without the outer card (inside a mobile sheet) */
+  embedded?: boolean;
 }
 
 const ROOT_NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -50,13 +53,16 @@ export const HarmonyPanel: React.FC<HarmonyPanelProps> = ({
   detectedKey,
   onApplyDetectedKey,
   anyOctave,
-  onToggleAnyOctave
+  onToggleAnyOctave,
+  embedded = false
 }) => {
   return (
-    <div className="mx-4 my-2 p-3 bg-slate-900/60 border border-slate-800 rounded-xl backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
+    <div className={embedded
+      ? 'flex flex-col items-stretch gap-3 text-sm'
+      : 'mx-4 my-2 p-3 bg-slate-900/60 border border-slate-800 rounded-xl backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs'}>
       {/* Left: Mode / Key Selection & Presets */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1.5 text-indigo-400 font-bold uppercase tracking-wider text-[11px]">
+        <div className={`${embedded ? 'hidden' : 'flex'} items-center gap-1.5 text-indigo-400 font-bold uppercase tracking-wider text-[11px]`}>
           <Music className="w-3.5 h-3.5" />
           <span>Harmony & Intervals:</span>
         </div>

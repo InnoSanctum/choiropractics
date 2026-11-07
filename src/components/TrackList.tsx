@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { AudioTrackState, DEFAULT_TRACK_COLORS } from '../audio/MultiTrackMixer';
 
-interface TrackListProps {
+export interface TrackListProps {
   tracks: AudioTrackState[];
   onUploadFile: (index: number, file: File) => void;
   onToggleMute: (index: number) => void;

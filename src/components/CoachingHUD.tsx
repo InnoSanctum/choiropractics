@@ -2,7 +2,7 @@ import React from 'react';
 import { ArrowUp, ArrowDown, CheckCircle2, Mic, Target, Flame } from 'lucide-react';
 import { CoachingFeedback } from '../audio/PitchComparator';
 
-interface CoachingHUDProps {
+export interface CoachingHUDProps {
   feedback: CoachingFeedback;
   hasMainTrack: boolean;
   tunerMode?: boolean;

@@ -3,7 +3,7 @@ import { Gauge, Timer, Hand, Wand2, Loader2 } from 'lucide-react';
 
 export type CountInMode = 'off' | '1bar' | '2bars' | 'custom';
 
-interface PracticePanelProps {
+export interface PracticePanelProps {
   speed: number;
   onSpeedChange: (rate: number) => void;
   /** 0..1 while pitch-preserved audio for a new speed is being prepared, else null */
@@ -26,6 +26,9 @@ interface PracticePanelProps {
   onCountInModeChange: (m: CountInMode) => void;
   countInCustomBeats: number;
   onCountInCustomBeatsChange: (n: number) => void;
+
+  /** Render without the outer card (inside a mobile sheet) */
+  embedded?: boolean;
 }
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1];
@@ -50,19 +53,22 @@ export const PracticePanel: React.FC<PracticePanelProps> = ({
   countInMode,
   onCountInModeChange,
   countInCustomBeats,
-  onCountInCustomBeatsChange
+  onCountInCustomBeatsChange,
+  embedded = false
 }) => {
   const isPreset = SPEED_PRESETS.includes(speed);
   const [customSpeed, setCustomSpeed] = useState(isPreset ? false : true);
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
 
-  const group = 'flex items-center gap-1.5 bg-slate-950/70 px-2 py-1 rounded-lg border border-slate-800';
+  const group = 'flex flex-wrap items-center gap-1.5 bg-slate-950/70 px-2 py-1 rounded-lg border border-slate-800';
   const label = 'text-[10px] uppercase font-bold text-slate-400';
   const select = 'bg-slate-900 text-slate-200 px-1.5 py-0.5 rounded outline-none cursor-pointer';
   const numberInput = 'bg-slate-900 text-cyan-300 font-mono px-1.5 py-0.5 rounded outline-none border border-slate-800 focus:border-cyan-700';
 
   return (
-    <div className="mx-4 mb-2 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-wrap items-center gap-3 text-xs">
+    <div className={embedded
+      ? 'flex flex-col items-start gap-3 text-sm'
+      : 'mx-4 mb-2 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-wrap items-center gap-3 text-xs'}>
       {/* Playback speed */}
       <div className={group} title="Playback speed (pitch is preserved)">
         <Gauge className="w-3.5 h-3.5 text-cyan-400" />

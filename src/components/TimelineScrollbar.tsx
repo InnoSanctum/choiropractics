@@ -3,7 +3,7 @@ import { ZoomIn, ZoomOut, Maximize2, LocateFixed } from 'lucide-react';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 import { NoteGridRenderer } from '../visualizer/NoteGridRenderer';
 
-interface TimelineScrollbarProps {
+export interface TimelineScrollbarProps {
   duration: number;
   currentTime: number;
   timeOffset: number;
@@ -181,6 +181,7 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        style={{ touchAction: 'none' }}
         className="flex-1 h-8 bg-slate-900/80 rounded-md border border-slate-800/80 relative cursor-pointer overflow-hidden"
         title="Drag the window to scroll · drag its edges to zoom · click to jump"
       >

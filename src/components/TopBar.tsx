@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { ThemeId, THEMES, NoteLabelMode } from '../visualizer/ThemeManager';
 
-interface TopBarProps {
+export interface TopBarProps {
   isPlaying: boolean;
   onPlayPause: () => void;
   onStop: () => void;

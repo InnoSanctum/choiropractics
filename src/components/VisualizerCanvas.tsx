@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import { NoteGridRenderer, RendererOptions, NOTE_AXIS_WIDTH, MicTake } from '../visualizer/NoteGridRenderer';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 
-interface VisualizerCanvasProps {
+export interface VisualizerCanvasProps {
   tracks: AudioTrackState[];
   takes: MicTake[];
   options: RendererOptions;
@@ -138,10 +138,81 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Pointer interactions: left-drag = seek/scrub, middle-drag / Alt+drag / Shift+drag = pan
+  // ---- Touch: tap = seek, one-finger drag = pan, two-finger pinch = zoom (+ pan) ----
+  const touchPoints = useRef(new Map<number, number>()); // pointerId -> clientX
+  const touchGesture = useRef<{ mode: 'tap' | 'pan' | 'pinch'; startX: number; lastX: number; lastDist: number; lastMid: number }>(
+    { mode: 'tap', startX: 0, lastX: 0, lastDist: 0, lastMid: 0 }
+  );
+  const TAP_SLOP = 8; // px a finger may move and still count as a tap
+
+  const plotWidthPx = () => Math.max(1, (canvasRef.current?.clientWidth ?? 1) - NOTE_AXIS_WIDTH);
+  const pinchState = () => {
+    const xs = [...touchPoints.current.values()];
+    return { dist: Math.max(1, Math.abs(xs[0] - xs[1])), mid: (xs[0] + xs[1]) / 2 };
+  };
+
+  const handleTouchDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    touchPoints.current.set(e.pointerId, e.clientX);
+    const g = touchGesture.current;
+    if (touchPoints.current.size === 1) {
+      Object.assign(g, { mode: 'tap', startX: e.clientX, lastX: e.clientX });
+    } else if (touchPoints.current.size === 2) {
+      const { dist, mid } = pinchState();
+      Object.assign(g, { mode: 'pinch', lastDist: dist, lastMid: mid });
+    }
+  };
+
+  const handleTouchMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!touchPoints.current.has(e.pointerId)) return;
+    touchPoints.current.set(e.pointerId, e.clientX);
+    const g = touchGesture.current;
+    const visible = latest.current.options.visibleDuration;
+
+    if (g.mode === 'pinch' && touchPoints.current.size >= 2) {
+      const { dist, mid } = pinchState();
+      // Horizontal pinch zooms the timeline around the fingers; moving both fingers pans
+      onZoomAt?.(dist / g.lastDist, clientXToTime(mid));
+      onScrollBy?.(-((mid - g.lastMid) / plotWidthPx()) * visible);
+      g.lastDist = dist;
+      g.lastMid = mid;
+      return;
+    }
+    if (g.mode === 'tap' && Math.abs(e.clientX - g.startX) > TAP_SLOP) {
+      g.mode = 'pan';
+    }
+    if (g.mode === 'pan') {
+      onScrollBy?.(-((e.clientX - g.lastX) / plotWidthPx()) * visible);
+    }
+    g.lastX = e.clientX;
+  };
+
+  const handleTouchUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const g = touchGesture.current;
+    if (g.mode === 'tap' && touchPoints.current.size === 1 && e.type === 'pointerup') {
+      onSeek(Math.max(0, clientXToTime(e.clientX)));
+    }
+    touchPoints.current.delete(e.pointerId);
+    if (touchPoints.current.size === 1) {
+      // One finger left after a pinch: continue as a pan from its position (no jump)
+      const x = [...touchPoints.current.values()][0];
+      Object.assign(g, { mode: 'pan', lastX: x, startX: x });
+    }
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Pointer was not captured
+    }
+  };
+
+  // Mouse/pen: left-drag = seek/scrub, middle-drag / Alt+drag / Shift+drag = pan
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || liveClockStart != null) return;
+    if (e.pointerType === 'touch') {
+      handleTouchDown(e);
+      return;
+    }
     e.currentTarget.setPointerCapture(e.pointerId);
     lastMouseXRef.current = e.clientX;
 
@@ -163,6 +234,10 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') {
+      handleTouchMove(e);
+      return;
+    }
     if (dragMode === 'none') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -178,6 +253,10 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') {
+      handleTouchUp(e);
+      return;
+    }
     setDragMode('none');
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -195,6 +274,7 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onAuxClick={(e) => e.preventDefault()}
+        style={{ touchAction: 'none' }}
         className={`w-full h-full block ${dragMode === 'pan' ? 'cursor-grabbing' : 'cursor-crosshair'}`}
         title="Click/drag: seek · Wheel: scroll · Ctrl+Wheel / pinch: zoom · Shift/Alt/middle-drag: pan"
       />

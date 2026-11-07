@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { TopBar } from './components/TopBar';
-import { TrackList } from './components/TrackList';
-import { CoachingHUD } from './components/CoachingHUD';
-import { HarmonyPanel } from './components/HarmonyPanel';
-import { VisualizerCanvas } from './components/VisualizerCanvas';
-import { TimelineScrollbar } from './components/TimelineScrollbar';
-import { PracticePanel, CountInMode } from './components/PracticePanel';
+import { TopBar, TopBarProps } from './components/TopBar';
+import { TrackList, TrackListProps } from './components/TrackList';
+import { CoachingHUD, CoachingHUDProps } from './components/CoachingHUD';
+import { HarmonyPanel, HarmonyPanelProps } from './components/HarmonyPanel';
+import { VisualizerCanvas, VisualizerCanvasProps } from './components/VisualizerCanvas';
+import { TimelineScrollbar, TimelineScrollbarProps } from './components/TimelineScrollbar';
+import { PracticePanel, PracticePanelProps, CountInMode } from './components/PracticePanel';
+import { TunerPanel, TunerPanelProps } from './components/TunerPanel';
+import { CanvasOverlays } from './components/CanvasOverlays';
+import { MobileLayout } from './components/mobile/MobileLayout';
+import { useIsMobile } from './hooks/useIsMobile';
 
 import { MultiTrackMixer, AudioTrackState, DEFAULT_TRACK_COLORS } from './audio/MultiTrackMixer';
 import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
@@ -50,6 +54,8 @@ const midiName = (midi: number, enharmonic: 'sharp' | 'flat') =>
 type AppMode = 'practice' | 'tuner';
 
 export function App() {
+  const isMobile = useIsMobile();
+
   // Mixer & Audio Engine instances
   const mixerRef = useRef<MultiTrackMixer | null>(null);
   const comparatorRef = useRef<PitchComparator>(new PitchComparator());
@@ -443,6 +449,11 @@ export function App() {
   }, [tracks]);
   durationRef.current = maxDuration;
 
+  // Phones start with a shorter window so notes stay readable
+  useEffect(() => {
+    setView(v => clampView(v.offset, isMobile ? BASE_VISIBLE / 2 : BASE_VISIBLE, durationRef.current));
+  }, [isMobile]);
+
   // Re-clamp the viewport when the song length changes (track loaded / cleared)
   useEffect(() => {
     setView(v => clampView(v.offset, v.visible, maxDuration));
@@ -523,6 +534,7 @@ export function App() {
   const handlePlayPause = async () => {
     const mixer = mixerRef.current;
     if (!mixer) return;
+    mixer.getAudioContext(); // resume within the user gesture (iOS)
 
     if (mixer.isPlaying) {
       mixer.pauseAll();
@@ -932,213 +944,235 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tunerTakes = useMemo(() => [tunerTakeRef.current], [tunerClockStart]);
 
+  // Keep the screen awake while practising (phones dim/lock otherwise)
+  useEffect(() => {
+    if (!isPlaying && !isMicActive) return;
+    type WakeLockSentinel = { release: () => Promise<void> };
+    const nav = navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<WakeLockSentinel> } };
+    if (!nav.wakeLock) return;
+    let lock: WakeLockSentinel | null = null;
+    let cancelled = false;
+    const acquire = () => {
+      nav.wakeLock!.request('screen').then(l => {
+        if (cancelled) l.release(); else lock = l;
+      }).catch(() => { /* not allowed (e.g. hidden tab) */ });
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
+    acquire();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      lock?.release().catch(() => {});
+    };
+  }, [isPlaying, isMicActive]);
+
+  // Mobile browsers (iOS Safari) only allow audio after a user gesture: resume on first touch
+  useEffect(() => {
+    const unlock = () => {
+      mixerRef.current?.getAudioContext();
+      window.removeEventListener('pointerdown', unlock);
+    };
+    window.addEventListener('pointerdown', unlock);
+    return () => window.removeEventListener('pointerdown', unlock);
+  }, []);
+
+  // ---- Shared props for both layouts ----
+  const topBarProps: TopBarProps = {
+    isPlaying,
+    onPlayPause: handlePlayPause,
+    onStop: handleStop,
+    currentTime,
+    duration: maxDuration,
+    isMicActive,
+    onToggleMic: handleToggleMic,
+    inputDevices,
+    selectedDeviceId,
+    onSelectDevice: (id) => {
+      setSelectedDeviceId(id);
+      if (isMicActive && mixerRef.current) {
+        mixerRef.current.startMicrophone(id);
+      }
+    },
+    theme,
+    onSelectTheme: setTheme,
+    noteLabelMode,
+    onSelectNoteLabelMode: setNoteLabelMode,
+    enharmonic,
+    onToggleEnharmonic: () => setEnharmonic(prev => prev === 'sharp' ? 'flat' : 'sharp'),
+    appMode,
+    onSetAppMode: handleSetAppMode,
+    keepTakes,
+    onToggleKeepTakes: () => setKeepTakes(k => !k),
+    takeCount: takesRef.current.length,
+    onClearTakes: clearTakes
+  };
+
+  const hudProps: CoachingHUDProps = {
+    feedback: coachingFeedback,
+    hasMainTrack: !!mainTrack,
+    tunerMode: isTuner,
+    referenceA4
+  };
+
+  const harmonyProps: HarmonyPanelProps = {
+    activePreset: activeHarmonyPreset,
+    onSelectPreset: setActiveHarmonyPreset,
+    rootIndex,
+    onSelectRoot: (r) => {
+      keyTouchedRef.current = true;
+      setRootIndex(r);
+    },
+    activeMode,
+    onSelectMode: (m) => {
+      keyTouchedRef.current = true;
+      setActiveMode(m);
+    },
+    customSemitones,
+    onChangeCustomSemitones: setCustomSemitones,
+    detectedKey,
+    onApplyDetectedKey: handleApplyDetectedKey,
+    anyOctave,
+    onToggleAnyOctave: () => {
+      setAnyOctave(a => !a);
+      comparatorRef.current.resetScore();
+    }
+  };
+
+  const practiceProps: PracticePanelProps = {
+    speed,
+    onSpeedChange: handleSpeedChange,
+    speedProgress,
+    metronomeOn,
+    onToggleMetronome: () => setMetronomeOn(m => !m),
+    bpm,
+    onBpmChange: (v) => {
+      tempoTouchedRef.current = true;
+      setBpm(v);
+    },
+    onShiftDownbeat: shiftDownbeat,
+    beatsPerBar,
+    onBeatsPerBarChange: setBeatsPerBar,
+    onTap: handleTap,
+    onDetectTempo: handleDetectTempo,
+    tempoStatus,
+    canDetectTempo: tracks.some(t => t.audioBuffer),
+    countInMode,
+    onCountInModeChange: setCountInMode,
+    countInCustomBeats,
+    onCountInCustomBeatsChange: setCountInCustomBeats
+  };
+
+  const tunerProps: TunerPanelProps = {
+    referenceA4,
+    onChangeReferenceA4: setReferenceA4,
+    isMicActive,
+    onEnableMic: startMic
+  };
+
+  const visualizerProps: VisualizerCanvasProps = {
+    tracks: isTuner ? [] : tracks,
+    takes: isTuner ? tunerTakes : takesRef.current,
+    liveClockStart: isTuner ? tunerClockStart : null,
+    options: {
+      theme: currentTheme,
+      noteLabelMode: isTuner && noteLabelMode === 'cs_only' ? 'all_notes' : noteLabelMode,
+      enharmonic,
+      minMidi: isTuner ? tunerRange.min : minMidi,
+      maxMidi: isTuner ? tunerRange.max : maxMidi,
+      visibleDuration: isTuner ? 8 : visibleDuration,
+      timeOffset,
+      currentTime,
+      harmonyNotes: isTuner ? undefined : harmonyNotes,
+      beatGrid: !isTuner && metronomeOn ? { bpm, firstBeat, beatsPerBar } : null,
+      highlightMidi: isTuner ? tunerNote : null,
+      hidePlayhead: isTuner
+    },
+    onSeek: handleSeek,
+    onScrollBy: scrollBy,
+    onZoomAt: zoomAt
+  };
+
+  const timelineProps: TimelineScrollbarProps = {
+    duration: maxDuration,
+    currentTime,
+    timeOffset,
+    visibleDuration,
+    minVisibleDuration: MIN_VISIBLE,
+    tracks,
+    autoFollow,
+    onScrollTo: scrollTo,
+    onSetView: setViewWindow,
+    onZoomIn: () => zoomButton(1.25),
+    onZoomOut: () => zoomButton(1 / 1.25),
+    onToggleAutoFollow: () => setAutoFollow(a => !a),
+    onFitSong: fitSong
+  };
+
+  const trackListProps: TrackListProps = {
+    tracks,
+    onUploadFile: handleUploadFile,
+    onToggleMute: handleToggleMute,
+    onToggleSolo: handleToggleSolo,
+    onChangeVolume: handleChangeVolume,
+    onChangeColor: handleChangeColor,
+    onSetMainTrack: handleSetMainTrack,
+    onClearTrack: handleClearTrack,
+    enableBandpass,
+    onToggleBandpass: () => setEnableBandpass(prev => !prev),
+    vocalPreset,
+    onSelectVocalPreset: setVocalPreset
+  };
+
+  const overlayProps = {
+    countInLeft,
+    showWelcome: !isTuner && !tracks.some(t => t.audioBuffer),
+    onLoadDemo: handleLoadDemo
+  };
+
+  if (isMobile) {
+    return (
+      <MobileLayout
+        topBar={topBarProps}
+        hud={hudProps}
+        harmony={harmonyProps}
+        practice={practiceProps}
+        tuner={tunerProps}
+        visualizer={visualizerProps}
+        timeline={timelineProps}
+        trackList={trackListProps}
+        overlays={overlayProps}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
-      <TopBar
-        isPlaying={isPlaying}
-        onPlayPause={handlePlayPause}
-        onStop={handleStop}
-        currentTime={currentTime}
-        duration={maxDuration}
-        isMicActive={isMicActive}
-        onToggleMic={handleToggleMic}
-        inputDevices={inputDevices}
-        selectedDeviceId={selectedDeviceId}
-        onSelectDevice={(id) => {
-          setSelectedDeviceId(id);
-          if (isMicActive && mixerRef.current) {
-            mixerRef.current.startMicrophone(id);
-          }
-        }}
-        theme={theme}
-        onSelectTheme={setTheme}
-        noteLabelMode={noteLabelMode}
-        onSelectNoteLabelMode={setNoteLabelMode}
-        enharmonic={enharmonic}
-        onToggleEnharmonic={() => setEnharmonic(prev => prev === 'sharp' ? 'flat' : 'sharp')}
-        appMode={appMode}
-        onSetAppMode={handleSetAppMode}
-        keepTakes={keepTakes}
-        onToggleKeepTakes={() => setKeepTakes(k => !k)}
-        takeCount={takesRef.current.length}
-        onClearTakes={clearTakes}
-      />
+      <TopBar {...topBarProps} />
 
       {/* Real-Time Pitch Coaching Feedback Bar */}
-      <CoachingHUD
-        feedback={coachingFeedback}
-        hasMainTrack={!!mainTrack}
-        tunerMode={isTuner}
-        referenceA4={referenceA4}
-      />
+      <CoachingHUD {...hudProps} />
 
       {isTuner ? (
-        <div className="mx-4 mb-2 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-wrap items-center gap-3 text-xs">
-          <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">Tuner</span>
-          <div className="flex items-center gap-1.5 bg-slate-950/70 px-2 py-1 rounded-lg border border-slate-800">
-            <span className="text-[10px] uppercase font-bold text-slate-400">A4 =</span>
-            <input
-              type="number"
-              min={400}
-              max={480}
-              step={0.5}
-              value={referenceA4}
-              onChange={(e) => setReferenceA4(Math.max(400, Math.min(480, Number(e.target.value) || 440)))}
-              className="bg-slate-900 text-cyan-300 font-mono px-1.5 py-0.5 rounded outline-none border border-slate-800 w-16"
-            />
-            <span className="text-slate-500 text-[10px]">Hz</span>
-            {referenceA4 !== 440 && (
-              <button onClick={() => setReferenceA4(440)} className="text-[10px] text-slate-400 hover:text-cyan-300 ml-1">reset</button>
-            )}
-          </div>
-          <span className="text-slate-400">
-            Sing or play a sustained note — the needle shows the distance to the nearest note. No reference track needed.
-          </span>
-          {!isMicActive && (
-            <button onClick={startMic} className="ml-auto px-3 py-1 rounded bg-rose-600 text-white font-semibold">Enable mic</button>
-          )}
-        </div>
+        <TunerPanel {...tunerProps} />
       ) : (
         <>
-          {/* Musical Harmony & Interval Settings */}
-          <HarmonyPanel
-            activePreset={activeHarmonyPreset}
-            onSelectPreset={setActiveHarmonyPreset}
-            rootIndex={rootIndex}
-            onSelectRoot={(r) => {
-              keyTouchedRef.current = true;
-              setRootIndex(r);
-            }}
-            activeMode={activeMode}
-            onSelectMode={(m) => {
-              keyTouchedRef.current = true;
-              setActiveMode(m);
-            }}
-            customSemitones={customSemitones}
-            onChangeCustomSemitones={setCustomSemitones}
-            detectedKey={detectedKey}
-            onApplyDetectedKey={handleApplyDetectedKey}
-            anyOctave={anyOctave}
-            onToggleAnyOctave={() => {
-              setAnyOctave(a => !a);
-              comparatorRef.current.resetScore();
-            }}
-          />
-
-          {/* Speed, metronome, count-in */}
-          <PracticePanel
-            speed={speed}
-            onSpeedChange={handleSpeedChange}
-            speedProgress={speedProgress}
-            metronomeOn={metronomeOn}
-            onToggleMetronome={() => setMetronomeOn(m => !m)}
-            bpm={bpm}
-            onBpmChange={(v) => {
-              tempoTouchedRef.current = true;
-              setBpm(v);
-            }}
-            onShiftDownbeat={shiftDownbeat}
-            beatsPerBar={beatsPerBar}
-            onBeatsPerBarChange={setBeatsPerBar}
-            onTap={handleTap}
-            onDetectTempo={handleDetectTempo}
-            tempoStatus={tempoStatus}
-            canDetectTempo={tracks.some(t => t.audioBuffer)}
-            countInMode={countInMode}
-            onCountInModeChange={setCountInMode}
-            countInCustomBeats={countInCustomBeats}
-            onCountInCustomBeatsChange={setCountInCustomBeats}
-          />
+          <HarmonyPanel {...harmonyProps} />
+          <PracticePanel {...practiceProps} />
         </>
       )}
 
       {/* Main Pitch Visualizer Canvas */}
       <div className="flex-1 min-h-0 relative flex flex-col">
-        <VisualizerCanvas
-          tracks={isTuner ? [] : tracks}
-          takes={isTuner ? tunerTakes : takesRef.current}
-          liveClockStart={isTuner ? tunerClockStart : null}
-          options={{
-            theme: currentTheme,
-            noteLabelMode: isTuner && noteLabelMode === 'cs_only' ? 'all_notes' : noteLabelMode,
-            enharmonic,
-            minMidi: isTuner ? tunerRange.min : minMidi,
-            maxMidi: isTuner ? tunerRange.max : maxMidi,
-            visibleDuration: isTuner ? 8 : visibleDuration,
-            timeOffset,
-            currentTime,
-            harmonyNotes: isTuner ? undefined : harmonyNotes,
-            beatGrid: !isTuner && metronomeOn ? { bpm, firstBeat, beatsPerBar } : null,
-            highlightMidi: isTuner ? tunerNote : null,
-            hidePlayhead: isTuner
-          }}
-          onSeek={handleSeek}
-          onScrollBy={scrollBy}
-          onZoomAt={zoomAt}
-        />
-
-        {/* Count-in overlay */}
-        {countInLeft > 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="text-7xl font-black font-mono text-cyan-300/80 drop-shadow-lg">{countInLeft}</div>
-          </div>
-        )}
-
-        {/* Quick demo if no track loaded */}
-        {!isTuner && !tracks.some(t => t.audioBuffer) && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="bg-slate-900/90 border border-slate-700/80 p-5 rounded-2xl shadow-2xl backdrop-blur max-w-sm text-center pointer-events-auto">
-              <h3 className="font-bold text-sm text-white mb-1">Welcome to Praat Vocal Studio</h3>
-              <p className="text-xs text-slate-400 mb-4">
-                Upload audio files into the 6 track slots below, try the instant demo, or switch to Tuner mode to sing freely.
-              </p>
-              <div className="flex gap-2 justify-center">
-                <button
-                  onClick={handleLoadDemo}
-                  className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg transition active:scale-95"
-                >
-                  Load Demo Reference
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <VisualizerCanvas {...visualizerProps} />
+        <CanvasOverlays {...overlayProps} uploadHint="into the 6 track slots below" />
       </div>
 
       {/* Song timeline: scrollbar, overview, zoom */}
-      {!isTuner && (
-        <TimelineScrollbar
-          duration={maxDuration}
-          currentTime={currentTime}
-          timeOffset={timeOffset}
-          visibleDuration={visibleDuration}
-          minVisibleDuration={MIN_VISIBLE}
-          tracks={tracks}
-          autoFollow={autoFollow}
-          onScrollTo={scrollTo}
-          onSetView={setViewWindow}
-          onZoomIn={() => zoomButton(1.25)}
-          onZoomOut={() => zoomButton(1 / 1.25)}
-          onToggleAutoFollow={() => setAutoFollow(a => !a)}
-          onFitSong={fitSong}
-        />
-      )}
+      {!isTuner && <TimelineScrollbar {...timelineProps} />}
 
       {/* Bottom: 6 Audio Tracks Management & Filter Matrix */}
-      <TrackList
-        tracks={tracks}
-        onUploadFile={handleUploadFile}
-        onToggleMute={handleToggleMute}
-        onToggleSolo={handleToggleSolo}
-        onChangeVolume={handleChangeVolume}
-        onChangeColor={handleChangeColor}
-        onSetMainTrack={handleSetMainTrack}
-        onClearTrack={handleClearTrack}
-        enableBandpass={enableBandpass}
-        onToggleBandpass={() => setEnableBandpass(prev => !prev)}
-        vocalPreset={vocalPreset}
-        onSelectVocalPreset={setVocalPreset}
-      />
+      <TrackList {...trackListProps} />
     </div>
   );
 }
