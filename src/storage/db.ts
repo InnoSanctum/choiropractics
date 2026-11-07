@@ -14,6 +14,7 @@ export interface StoredAudioTrack {
   name: string;
   audioBlob: Blob;
   pitchFramesJson: string; // JSON serialized PitchFrame[]
+  analysisVersion?: number; // Pitch analysis algorithm version used to produce the frames
   color: string;
   volume: number;
   updatedAt: Date;
@@ -36,13 +37,14 @@ export class VocalTunerDB extends Dexie {
     });
   }
 
-  public async saveTrack(index: number, name: string, audioBlob: Blob, frames: PitchFrame[], color: string, volume: number) {
+  public async saveTrack(index: number, name: string, audioBlob: Blob, frames: PitchFrame[], color: string, volume: number, analysisVersion?: number) {
     const existing = await this.tracks.where('trackIndex').equals(index).first();
     const data: StoredAudioTrack = {
       trackIndex: index,
       name,
       audioBlob,
       pitchFramesJson: JSON.stringify(frames),
+      analysisVersion,
       color,
       volume,
       updatedAt: new Date()

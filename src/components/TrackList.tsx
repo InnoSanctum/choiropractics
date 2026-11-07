@@ -73,10 +73,10 @@ export const TrackList: React.FC<TrackListProps> = ({
               onChange={(e) => onSelectVocalPreset(e.target.value as any)}
               className="bg-slate-950 text-cyan-300 text-[10px] rounded px-1.5 py-0.5 outline-none cursor-pointer"
             >
-              <option value="all">Full Vocal (80-1100Hz)</option>
-              <option value="male">Male (75-500Hz)</option>
-              <option value="female">Female (140-880Hz)</option>
-              <option value="soprano">Soprano (220-1150Hz)</option>
+              <option value="all">Full Range (50-1400Hz)</option>
+              <option value="male">Male (65-600Hz)</option>
+              <option value="female">Female (130-950Hz)</option>
+              <option value="soprano">Soprano (200-1300Hz)</option>
             </select>
           )}
         </div>

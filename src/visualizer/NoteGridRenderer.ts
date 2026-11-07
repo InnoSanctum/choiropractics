@@ -22,6 +22,20 @@ export interface RendererOptions {
   targetPitchMidi?: number; // Harmonized target pitch
 }
 
+export interface NoteSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  duration: number;
+  medianMidi: number;
+  nearestMidi: number;
+  noteName: string;
+  frames: PitchFrame[];
+}
+
+/** Width of the left note-label axis, in CSS pixels. */
+export const NOTE_AXIS_WIDTH = 56;
+
 const NOTE_NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const NOTE_NAMES_FLAT  = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 
@@ -39,9 +53,12 @@ export class NoteGridRenderer {
   public render(
     tracks: AudioTrackState[],
     micHistory: PitchFrame[],
-    options: RendererOptions
+    options: RendererOptions,
+    logicalWidth?: number,
+    logicalHeight?: number
   ) {
-    const { width, height } = this.canvas;
+    const width = logicalWidth || this.canvas.clientWidth || this.canvas.width;
+    const height = logicalHeight || this.canvas.clientHeight || this.canvas.height;
     const ctx = this.ctx;
     const theme = options.theme;
 
@@ -49,11 +66,11 @@ export class NoteGridRenderer {
     ctx.fillStyle = theme.bgMain;
     ctx.fillRect(0, 0, width, height);
 
-    const noteAxisWidth = 56; // Left margin reserved for note labels
+    const noteAxisWidth = NOTE_AXIS_WIDTH; // Left margin reserved for note labels
     const plotWidth = width - noteAxisWidth;
     const plotHeight = height;
 
-    const midiRange = options.maxMidi - options.minMidi;
+    const midiRange = Math.max(1, options.maxMidi - options.minMidi);
     const midiToY = (midi: number) => {
       const normalized = (options.maxMidi - midi) / midiRange;
       return normalized * plotHeight;
@@ -61,11 +78,12 @@ export class NoteGridRenderer {
 
     const timeToX = (time: number) => {
       const relTime = time - options.timeOffset;
-      return noteAxisWidth + (relTime / options.visibleDuration) * plotWidth;
+      return noteAxisWidth + (relTime / Math.max(0.01, options.visibleDuration)) * plotWidth;
     };
 
     // 2. Draw Horizontal Semitone Grid & Note Labels
     this.drawGrid(ctx, options, noteAxisWidth, plotWidth, plotHeight, midiToY);
+    this.drawTimeRuler(ctx, options, noteAxisWidth, plotWidth, plotHeight, timeToX);
 
     // 3. Render Pre-Analyzed Audio Tracks
     ctx.save();
@@ -76,7 +94,7 @@ export class NoteGridRenderer {
 
     for (const track of tracks) {
       if (track.pitchFrames && track.pitchFrames.length > 0 && !track.muted) {
-        this.renderTrackPills(ctx, track.pitchFrames, track.color, options, timeToX, midiToY);
+        this.renderTrackPills(ctx, track.pitchFrames, track.color, options, timeToX, midiToY, plotHeight, midiRange);
       }
     }
 
@@ -106,6 +124,53 @@ export class NoteGridRenderer {
       ctx.fill();
     }
 
+    ctx.restore();
+  }
+
+  /**
+   * Draws vertical time gridlines with labels; the step adapts to the zoom level.
+   */
+  private drawTimeRuler(
+    ctx: CanvasRenderingContext2D,
+    options: RendererOptions,
+    axisWidth: number,
+    plotWidth: number,
+    plotHeight: number,
+    timeToX: (t: number) => number
+  ) {
+    const theme = options.theme;
+    const pxPerSecond = plotWidth / Math.max(0.01, options.visibleDuration);
+    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    const step = steps.find(s => s * pxPerSecond >= 80) ?? steps[steps.length - 1];
+
+    const formatTime = (t: number) => {
+      const m = Math.floor(t / 60);
+      const sec = t - m * 60;
+      const secStr = step < 1 ? sec.toFixed(step === 0.25 ? 2 : 1) : Math.round(sec).toString();
+      return `${m}:${sec < 10 ? '0' : ''}${secStr}`;
+    };
+
+    const first = Math.max(0, Math.ceil(options.timeOffset / step) * step);
+    const last = options.timeOffset + options.visibleDuration;
+
+    ctx.save();
+    ctx.font = '500 10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for (let t = first; t <= last + 1e-9; t += step) {
+      const x = Math.round(timeToX(t)) + 0.5;
+      if (x < axisWidth || x > axisWidth + plotWidth) continue;
+      ctx.strokeStyle = theme.gridLineSemitone;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, plotHeight);
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = theme.gridText;
+      ctx.fillText(formatTime(t), x + 4, 4);
+    }
     ctx.restore();
   }
 
@@ -183,9 +248,198 @@ export class NoteGridRenderer {
     ctx.stroke();
   }
 
+  /** Segments cache: pitch frame arrays are immutable once analyzed, so key by reference. */
+  private static segmentCache = new WeakMap<PitchFrame[], NoteSegment[]>();
+
   /**
-   * Renders note segments as horizontal rounded bars (pills) with endpoint dots
-   * and smooth bezier curves connecting transitions, matching the reference image!
+   * Returns note segments for a whole track (cached per frames array).
+   */
+  public static getSegments(frames: PitchFrame[]): NoteSegment[] {
+    let segs = NoteGridRenderer.segmentCache.get(frames);
+    if (!segs) {
+      segs = NoteGridRenderer.segmentNotes(frames);
+      NoteGridRenderer.segmentCache.set(frames, segs);
+    }
+    return segs;
+  }
+
+  /**
+   * Segments continuous pitch frames into musical note events based on:
+   * 1. Voicing/silence boundaries
+   * 2. Sustained pitch changes (>= SPLIT_SEMITONES for SPLIT_FRAMES consecutive frames),
+   *    so vibrato and short scoops do not fragment a sung note
+   * 3. Intensity onsets (e.g. repeated piano keystrokes on the same note)
+   */
+  public static segmentNotes(frames: PitchFrame[], timeRange?: { start: number; end: number }): NoteSegment[] {
+    const SPLIT_SEMITONES = 0.6;
+    const SPLIT_FRAMES = 5;
+    const MIN_FRAMES = 4;       // Shortest note that is drawn
+    const MIN_SPLIT_FRAMES = 8; // A note must last this long before it can be split again
+    const REF_WINDOW = 50;      // Reference pitch = mean of the last 0.5 s of the note (spans several vibrato cycles)
+    const VIBRATO_PERIOD = 18;  // ~180 ms = one cycle of a typical 5-6 Hz vibrato
+    const STEP_SEMITONES = 0.6; // Minimum change of the period-averaged pitch to count as a new note
+
+    const segments: NoteSegment[] = [];
+    if (!frames || frames.length === 0) return segments;
+
+    const startTime = timeRange ? timeRange.start : -Infinity;
+    const endTime = timeRange ? timeRange.end : Infinity;
+
+    const median = (values: number[]) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = sorted.length >> 1;
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+
+    let current: PitchFrame[] = [];
+    let currentStartIdx = 0;
+
+    const flush = (frameList: PitchFrame[]) => {
+      if (frameList.length >= MIN_FRAMES) {
+        const medianMidi = median(frameList.map(f => f.exactMidi));
+        const nearestMidi = Math.round(medianMidi);
+        const noteIndex = ((nearestMidi % 12) + 12) % 12;
+        const octave = Math.floor(nearestMidi / 12) - 1;
+        const first = frameList[0];
+        const last = frameList[frameList.length - 1];
+        segments.push({
+          id: `seg-${segments.length}`,
+          startTime: first.timestamp,
+          endTime: last.timestamp,
+          duration: last.timestamp - first.timestamp,
+          medianMidi,
+          nearestMidi,
+          noteName: `${NOTE_NAMES_SHARP[noteIndex]}${octave}`,
+          frames: frameList
+        });
+      }
+    };
+
+    // Mean pitch of voiced frames in [from, to), stopping at the first unvoiced frame
+    const meanMidi = (from: number, to: number, backwards: boolean) => {
+      let sum = 0;
+      let count = 0;
+      if (backwards) {
+        for (let k = to - 1; k >= from && frames[k].voiced; k--) { sum += frames[k].exactMidi; count++; }
+      } else {
+        for (let k = from; k < to && k < frames.length && frames[k].voiced; k++) { sum += frames[k].exactMidi; count++; }
+      }
+      return { mean: count > 0 ? sum / count : NaN, count };
+    };
+
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.timestamp < startTime || f.timestamp > endTime) continue;
+
+      if (!f.voiced || f.frequency <= 0) {
+        flush(current);
+        current = [];
+        continue;
+      }
+
+      if (current.length >= MIN_SPLIT_FRAMES) {
+        const ref = meanMidi(Math.max(currentStartIdx, i - REF_WINDOW), i, true).mean;
+
+        // Candidate split: this and the following frames all moved away from the note...
+        if (Math.abs(f.exactMidi - ref) >= SPLIT_SEMITONES) {
+          const dir = Math.sign(f.exactMidi - ref);
+          let sustained = true;
+          for (let k = 1; k < SPLIT_FRAMES; k++) {
+            const nf = frames[i + k];
+            if (!nf || !nf.voiced || Math.sign(nf.exactMidi - ref) !== dir || Math.abs(nf.exactMidi - ref) < SPLIT_SEMITONES) {
+              sustained = false;
+              break;
+            }
+          }
+          // ...and the average pitch over ~one vibrato period after the candidate differs from
+          // the period before it. Vibrato averages out over a full period; a real note change does not.
+          if (sustained) {
+            const before = meanMidi(Math.max(currentStartIdx, i - VIBRATO_PERIOD), i, true);
+            const after = meanMidi(i, i + VIBRATO_PERIOD, false);
+            // A short tail (note about to end) cannot average out vibrato: demand a larger step
+            const required = after.count >= VIBRATO_PERIOD * 0.6 ? STEP_SEMITONES : 1.5;
+            sustained = Math.abs(after.mean - before.mean) >= required;
+          }
+          if (sustained) {
+            flush(current);
+            current = [f];
+            currentStartIdx = i;
+            continue;
+          }
+        }
+
+        // Onset: sudden intensity rise (re-attack of the same pitch)
+        const prevFrame = current[current.length - 1];
+        if (current.length >= 8 && f.intensity > 2.0 * prevFrame.intensity && prevFrame.intensity > 0.002) {
+          flush(current);
+          current = [f];
+          currentStartIdx = i;
+          continue;
+        }
+      }
+
+      if (current.length === 0) currentStartIdx = i;
+      current.push(f);
+    }
+
+    flush(current);
+    return NoteGridRenderer.mergeSlivers(segments, median);
+  }
+
+  /**
+   * Merges very short segments (< 100 ms) into a directly adjacent note that is within about a
+   * semitone. These slivers are vibrato peaks or scoops right at a note boundary, not notes.
+   */
+  private static mergeSlivers(segments: NoteSegment[], median: (v: number[]) => number): NoteSegment[] {
+    const SLIVER_FRAMES = 10;
+    const MAX_GAP = 0.015;
+    const MAX_DIFF = 1.25;
+    const result = [...segments];
+
+    for (let s = 0; s < result.length; s++) {
+      const seg = result[s];
+      if (seg.frames.length >= SLIVER_FRAMES) continue;
+      const prev = s > 0 ? result[s - 1] : null;
+      const next = s < result.length - 1 ? result[s + 1] : null;
+      const prevOk = prev && seg.startTime - prev.endTime <= MAX_GAP && Math.abs(prev.medianMidi - seg.medianMidi) < MAX_DIFF;
+      const nextOk = next && next.startTime - seg.endTime <= MAX_GAP && Math.abs(next.medianMidi - seg.medianMidi) < MAX_DIFF;
+      if (!prevOk && !nextOk) continue;
+
+      const intoPrev = prevOk && (!nextOk || Math.abs(prev!.medianMidi - seg.medianMidi) <= Math.abs(next!.medianMidi - seg.medianMidi));
+      const target = intoPrev ? prev! : next!;
+      const frames = intoPrev ? [...target.frames, ...seg.frames] : [...seg.frames, ...target.frames];
+      const medianMidi = median(frames.map(f => f.exactMidi));
+      const nearestMidi = Math.round(medianMidi);
+      const merged: NoteSegment = {
+        ...target,
+        startTime: frames[0].timestamp,
+        endTime: frames[frames.length - 1].timestamp,
+        duration: frames[frames.length - 1].timestamp - frames[0].timestamp,
+        medianMidi,
+        nearestMidi,
+        noteName: `${NOTE_NAMES_SHARP[((nearestMidi % 12) + 12) % 12]}${Math.floor(nearestMidi / 12) - 1}`,
+        frames
+      };
+      if (intoPrev) {
+        result.splice(s - 1, 2, merged);
+      } else {
+        result.splice(s, 2, merged);
+      }
+      s = Math.max(-1, s - 2);
+    }
+
+    return result.map((seg, i) => ({ ...seg, id: `seg-${i}` }));
+  }
+
+  /** Display name for a MIDI note honoring sharp/flat preference. */
+  private static midiName(midi: number, enharmonic: 'sharp' | 'flat') {
+    const table = enharmonic === 'flat' ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP;
+    return `${table[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
+  }
+
+  /**
+   * Renders note segments as horizontal rounded bars (pills) with note names,
+   * continuous high-precision pitch contours, and smooth transitions.
    */
   private renderTrackPills(
     ctx: CanvasRenderingContext2D,
@@ -193,106 +447,108 @@ export class NoteGridRenderer {
     color: string,
     options: RendererOptions,
     timeToX: (t: number) => number,
-    midiToY: (m: number) => number
+    midiToY: (m: number) => number,
+    plotHeight: number,
+    midiRange: number
   ) {
     if (frames.length === 0) return;
 
-    // Filter frames within or slightly outside the visible time window
+    // Only segments overlapping the visible window (plus margin for transition curves)
     const startTime = options.timeOffset - 0.5;
     const endTime = options.timeOffset + options.visibleDuration + 0.5;
+    const segments = NoteGridRenderer.getSegments(frames).filter(
+      s => s.endTime >= startTime && s.startTime <= endTime
+    );
+    if (segments.length === 0) return;
 
-    // Group continuous voiced frames into note segments
-    interface NoteSegment {
-      startIdx: number;
-      endIdx: number;
-      startTime: number;
-      endTime: number;
-      avgMidi: number;
-      frames: PitchFrame[];
-    }
+    const rowHeight = plotHeight / midiRange;
+    const pillHeight = Math.max(6, Math.min(rowHeight * 0.8, 16));
 
-    const segments: NoteSegment[] = [];
-    let currentFrames: PitchFrame[] = [];
-
-    for (let i = 0; i < frames.length; i++) {
-      const f = frames[i];
-      if (f.timestamp < startTime || f.timestamp > endTime) continue;
-
-      if (f.voiced && f.frequency > 0) {
-        currentFrames.push(f);
-      } else {
-        if (currentFrames.length >= 3) {
-          const sumMidi = currentFrames.reduce((acc, c) => acc + c.exactMidi, 0);
-          segments.push({
-            startIdx: i - currentFrames.length,
-            endIdx: i - 1,
-            startTime: currentFrames[0].timestamp,
-            endTime: currentFrames[currentFrames.length - 1].timestamp,
-            avgMidi: sumMidi / currentFrames.length,
-            frames: [...currentFrames]
-          });
-        }
-        currentFrames = [];
-      }
-    }
-    if (currentFrames.length >= 3) {
-      const sumMidi = currentFrames.reduce((acc, c) => acc + c.exactMidi, 0);
-      segments.push({
-        startIdx: frames.length - currentFrames.length,
-        endIdx: frames.length - 1,
-        startTime: currentFrames[0].timestamp,
-        endTime: currentFrames[currentFrames.length - 1].timestamp,
-        avgMidi: sumMidi / currentFrames.length,
-        frames: [...currentFrames]
-      });
-    }
-
-    // Draw connecting transition curves between segments (glissandos / pitch transitions)
+    // 1. Draw connecting transition curves between segments (glissandos / pitch transitions)
     ctx.strokeStyle = color;
-    ctx.fillStyle = color;
+    ctx.lineWidth = 2.0;
 
     for (let s = 0; s < segments.length - 1; s++) {
       const segA = segments[s];
       const segB = segments[s + 1];
 
-      // If gap is less than 0.3s, connect with smooth bezier curve
       const gap = segB.startTime - segA.endTime;
-      if (gap >= 0 && gap < 0.4) {
+      if (gap >= 0 && gap < 0.35) {
         const x1 = timeToX(segA.endTime);
-        const y1 = midiToY(segA.avgMidi);
+        const y1 = midiToY(segA.medianMidi);
         const x2 = timeToX(segB.startTime);
-        const y2 = midiToY(segB.avgMidi);
+        const y2 = midiToY(segB.medianMidi);
 
-        ctx.lineWidth = 2.5;
-        ctx.globalAlpha = 0.65;
+        ctx.globalAlpha = 0.45;
         ctx.beginPath();
         ctx.moveTo(x1, y1);
-
-        // Cubic bezier S-curve
         const midX = (x1 + x2) / 2;
         ctx.bezierCurveTo(midX, y1, midX, y2, x2, y2);
         ctx.stroke();
       }
     }
 
-    // Draw horizontal rounded pills and endpoint circles
-    const pillHeight = 7.0; // Thick rounded horizontal line
+    // 2. Draw Note Pills and Pitch Contours
     for (const seg of segments) {
       const x1 = timeToX(seg.startTime);
-      const x2 = Math.max(x1 + 6, timeToX(seg.endTime));
-      const y = midiToY(seg.avgMidi);
+      const x2 = Math.max(x1 + 8, timeToX(seg.endTime));
+      const width = x2 - x1;
+      const y = midiToY(seg.medianMidi);
+      const halfH = pillHeight / 2;
 
-      ctx.globalAlpha = 0.95;
-      ctx.lineWidth = pillHeight;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = color;
-
+      // Draw rounded background pill
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.moveTo(x1, y);
-      ctx.lineTo(x2, y);
+      ctx.roundRect(x1, y - halfH, width, pillHeight, 4);
+      ctx.fill();
+
+      // Border of pill
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.2;
       ctx.stroke();
 
+      // Note name just above the bar (inside it would collide with the pitch contour line)
+      if (width >= 22) {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = color;
+        ctx.font = '600 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(NoteGridRenderer.midiName(seg.nearestMidi, options.enharmonic), x1 + 2, y - halfH - 2);
+      }
+      ctx.restore();
+
+      // 3. Draw continuous high-precision pitch contour line inside the note
+      if (seg.frames.length >= 2) {
+        ctx.save();
+        ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < seg.frames.length; i++) {
+          const f = seg.frames[i];
+          const fx = timeToX(f.timestamp);
+          const fy = midiToY(f.exactMidi);
+          if (!started) {
+            ctx.moveTo(fx, fy);
+            started = true;
+          } else {
+            ctx.lineTo(fx, fy);
+          }
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Small endpoint circle dot at the transition edge
+      ctx.save();
       ctx.globalAlpha = 1.0;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
@@ -301,6 +557,7 @@ export class NoteGridRenderer {
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.stroke();
+      ctx.restore();
     }
 
     ctx.globalAlpha = 1.0;

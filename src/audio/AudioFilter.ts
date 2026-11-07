@@ -120,14 +120,14 @@ export class AudioFilter {
   public static getPresetBounds(preset: 'all' | 'male' | 'female' | 'soprano' | 'custom'): { low: number, high: number } {
     switch (preset) {
       case 'male':
-        return { low: 75, high: 500 };     // E2 (~82Hz) to B4 (~493Hz)
+        return { low: 65, high: 600 };     // C2 (~65Hz) to D5 (~587Hz)
       case 'female':
-        return { low: 140, high: 880 };    // D3 (~146Hz) to A5 (~880Hz)
+        return { low: 130, high: 950 };    // C3 (~130Hz) to Bb5 (~932Hz)
       case 'soprano':
-        return { low: 220, high: 1150 };   // A3 (~220Hz) to D6 (~1174Hz)
+        return { low: 200, high: 1300 };   // G3 (~196Hz) to E6 (~1318Hz)
       case 'all':
       default:
-        return { low: 80, high: 1100 };    // Comprehensive lead vocal spectrum
+        return { low: 50, high: 1400 };    // Comprehensive full musical range (piano & vocal ensemble)
     }
   }
 }

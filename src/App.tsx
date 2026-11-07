@@ -4,10 +4,11 @@ import { TrackList } from './components/TrackList';
 import { CoachingHUD } from './components/CoachingHUD';
 import { HarmonyPanel } from './components/HarmonyPanel';
 import { VisualizerCanvas } from './components/VisualizerCanvas';
+import { TimelineScrollbar } from './components/TimelineScrollbar';
 
 import { MultiTrackMixer, AudioTrackState, DEFAULT_TRACK_COLORS } from './audio/MultiTrackMixer';
 import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
-import { BatchPitchExtractor } from './audio/BatchPitchExtractor';
+import { BatchPitchExtractor, PITCH_ANALYSIS_VERSION } from './audio/BatchPitchExtractor';
 import { PitchComparator, CoachingFeedback } from './audio/PitchComparator';
 import { 
   MusicalHarmonyEngine, 
@@ -18,6 +19,19 @@ import {
 } from './audio/MusicalHarmonyEngine';
 import { ThemeId, THEMES, NoteLabelMode } from './visualizer/ThemeManager';
 import { db } from './storage/db';
+
+// Timeline viewport limits
+const BASE_VISIBLE = 8.0;  // Seconds visible at zoom 1.0
+const MIN_VISIBLE = 1.0;   // Most zoomed-in: 1 second across the screen
+
+/** Clamps a viewport so it stays inside the song. With no audio loaded, only the start is clamped. */
+function clampView(offset: number, visible: number, duration: number) {
+  const maxVisible = Math.max(BASE_VISIBLE, duration);
+  const v = Math.max(MIN_VISIBLE, Math.min(maxVisible, visible));
+  const maxOffset = duration > 0 ? Math.max(0, duration - v) : Number.POSITIVE_INFINITY;
+  const o = Math.max(0, Math.min(maxOffset, offset));
+  return { offset: o, visible: v };
+}
 
 export function App() {
   // Mixer & Audio Engine instances
@@ -47,8 +61,21 @@ export function App() {
   // Playback & Timeline State
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [timeOffset, setTimeOffset] = useState(0);
-  const [zoom, setZoom] = useState(1.0); // 1.0 = 8.0s visible
+  // Visible window of the song diagram: start time and length in seconds
+  const [view, setView] = useState({ offset: 0, visible: BASE_VISIBLE });
+  const [autoFollow, setAutoFollow] = useState(true);
+  const timeOffset = view.offset;
+  const visibleDuration = view.visible;
+  const zoom = BASE_VISIBLE / view.visible;
+
+  // Refs for callbacks registered once (playback tick, keyboard)
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const autoFollowRef = useRef(autoFollow);
+  autoFollowRef.current = autoFollow;
+  const durationRef = useRef(0);
+  const currentTimeRef = useRef(0);
+  currentTimeRef.current = currentTime;
 
   // Microphone & Real-time Pitch State
   const [isMicActive, setIsMicActive] = useState(false);
@@ -101,14 +128,12 @@ export function App() {
     // Playback time tick
     mixer.onPlaybackTick = (time) => {
       setCurrentTime(time);
-      // Auto-advance timeline viewport
-      const visibleDur = 8.0 / zoom;
-      setTimeOffset(prev => {
-        if (time > prev + visibleDur * 0.75) {
-          return time - visibleDur * 0.25;
-        }
-        return prev;
-      });
+      if (!autoFollowRef.current) return;
+      // Page the viewport forward when the playhead nears the right edge (or left the view)
+      const { offset, visible } = viewRef.current;
+      if (time > offset + visible * 0.85 || time < offset) {
+        setView(clampView(time - visible * 0.1, visible, durationRef.current));
+      }
     };
 
     mixer.onPlaybackEnded = () => {
@@ -121,13 +146,30 @@ export function App() {
         if (stored && mixerRef.current) {
           try {
             const buffer = await mixerRef.current.decodeAudioFile(stored.track.audioBlob as File);
+            let frames = stored.frames;
+            if (stored.track.analysisVersion !== PITCH_ANALYSIS_VERSION) {
+              // Stored with an older pitch algorithm: re-analyze and update the cache
+              setTracks(prev => prev.map(t => t.index === i ? { ...t, isAnalyzing: true, analysisProgress: 0, name: stored.track.name } : t));
+              frames = await BatchPitchExtractor.extractPitchFromAudioBuffer(buffer, {
+                onProgress: (p) => {
+                  setTracks(prev => prev.map(t => t.index === i ? { ...t, analysisProgress: p.percent } : t));
+                }
+              });
+              await db.saveTrack(i, stored.track.name, stored.track.audioBlob, frames, stored.track.color, stored.track.volume, PITCH_ANALYSIS_VERSION);
+            }
+            const keyResult = MusicalHarmonyEngine.detectKeyAndMode(frames);
+            if (keyResult && keyResult.confidence > 0.45) {
+              setDetectedKey(prev => prev ?? keyResult);
+            }
             setTracks(prev => prev.map(t => {
               if (t.index === i) {
                 return {
                   ...t,
-                  name: stored.track.name,
+                  name: stored.track.name.replace(/\.[^/.]+$/, ''),
                   audioBuffer: buffer,
-                  pitchFrames: stored.frames,
+                  pitchFrames: frames,
+                  isAnalyzing: false,
+                  analysisProgress: 100,
                   color: stored.track.color || t.color,
                   volume: stored.track.volume || t.volume,
                   duration: buffer.duration
@@ -137,6 +179,7 @@ export function App() {
             }));
           } catch (e) {
             console.error('Failed restoring track from IndexedDB:', e);
+            setTracks(prev => prev.map(t => t.index === i ? { ...t, isAnalyzing: false } : t));
           }
         }
       });
@@ -160,6 +203,97 @@ export function App() {
   const maxDuration = useMemo(() => {
     return Math.max(0, ...tracks.map(t => t.duration));
   }, [tracks]);
+  durationRef.current = maxDuration;
+
+  // Re-clamp the viewport when the song length changes (track loaded / cleared)
+  useEffect(() => {
+    setView(v => clampView(v.offset, v.visible, maxDuration));
+  }, [maxDuration]);
+
+  // ---- Timeline viewport (scroll & zoom) ----
+  const scrollTo = useCallback((offset: number) => {
+    setView(v => clampView(offset, v.visible, durationRef.current));
+    if (mixerRef.current?.isPlaying) setAutoFollow(false);
+  }, []);
+
+  const scrollBy = useCallback((deltaSeconds: number) => {
+    setView(v => clampView(v.offset + deltaSeconds, v.visible, durationRef.current));
+    if (mixerRef.current?.isPlaying) setAutoFollow(false);
+  }, []);
+
+  const setViewWindow = useCallback((offset: number, visible: number) => {
+    setView(clampView(offset, visible, durationRef.current));
+  }, []);
+
+  /** Zoom by `factor` (>1 = in) keeping `anchorTime` fixed on screen. */
+  const zoomAt = useCallback((factor: number, anchorTime?: number) => {
+    setView(v => {
+      const anchor = anchorTime ?? v.offset + v.visible / 2;
+      const fraction = Math.max(0, Math.min(1, (anchor - v.offset) / v.visible));
+      const newVisible = clampView(0, v.visible / factor, durationRef.current).visible;
+      return clampView(anchor - fraction * newVisible, newVisible, durationRef.current);
+    });
+  }, []);
+
+  // Zoom buttons keep the playhead in place when it is on screen, otherwise the view centre
+  const zoomButton = useCallback((factor: number) => {
+    const v = viewRef.current;
+    const t = currentTimeRef.current;
+    zoomAt(factor, t >= v.offset && t <= v.offset + v.visible ? t : undefined);
+  }, [zoomAt]);
+
+  const fitSong = useCallback(() => {
+    setView(clampView(0, Math.max(durationRef.current, BASE_VISIBLE), durationRef.current));
+  }, []);
+
+  // Keyboard shortcuts: +/- zoom, 0 fit, arrows scroll, Home/End, F follow, Space play/pause
+  const playPauseRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const v = viewRef.current;
+      switch (e.key) {
+        case '+':
+        case '=':
+          zoomButton(1.25);
+          break;
+        case '-':
+        case '_':
+          zoomButton(1 / 1.25);
+          break;
+        case '0':
+          fitSong();
+          break;
+        case 'ArrowRight':
+          scrollBy(v.visible * (e.shiftKey ? 0.5 : 0.1));
+          break;
+        case 'ArrowLeft':
+          scrollBy(-v.visible * (e.shiftKey ? 0.5 : 0.1));
+          break;
+        case 'Home':
+          scrollTo(0);
+          break;
+        case 'End':
+          scrollTo(durationRef.current);
+          break;
+        case 'f':
+        case 'F':
+          setAutoFollow(a => !a);
+          break;
+        case ' ':
+          if (target && target.tagName === 'BUTTON') return; // let the focused button handle it
+          playPauseRef.current();
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomButton, fitSong, scrollBy, scrollTo]);
 
   // Current Main reference track
   const mainTrack = useMemo(() => {
@@ -252,8 +386,10 @@ export function App() {
     } else {
       mixer.playAll(tracks, currentTime);
       setIsPlaying(true);
+      setAutoFollow(true);
     }
   };
+  playPauseRef.current = handlePlayPause;
 
   // Stop transport
   const handleStop = () => {
@@ -262,7 +398,7 @@ export function App() {
     mixer.stopAll();
     setIsPlaying(false);
     setCurrentTime(0);
-    setTimeOffset(0);
+    setView(v => clampView(0, v.visible, durationRef.current));
   };
 
   // Seek timeline
@@ -325,7 +461,8 @@ export function App() {
         file,
         pitchFrames,
         currentTrack.color,
-        currentTrack.volume
+        currentTrack.volume,
+        PITCH_ANALYSIS_VERSION
       );
     } catch (err) {
       console.error('Failed to process audio file:', err);
@@ -447,10 +584,27 @@ export function App() {
     });
   };
 
-  // Note Range on Grid
-  const minMidi = 45; // A2
-  const maxMidi = 77; // F5
-  const visibleDuration = 8.0 / zoom;
+  // Note range on the grid: fit to the pitches of the loaded tracks (default A2..F5)
+  const { minMidi, maxMidi } = useMemo(() => {
+    const pitches: number[] = [];
+    for (const t of tracks) {
+      if (t.muted) continue;
+      for (const f of t.pitchFrames) {
+        if (f.voiced && f.exactMidi > 0) pitches.push(f.exactMidi);
+      }
+    }
+    if (pitches.length < 10) return { minMidi: 45, maxMidi: 77 };
+    pitches.sort((a, b) => a - b);
+    let lo = Math.floor(pitches[Math.floor(pitches.length * 0.01)]) - 3;
+    let hi = Math.ceil(pitches[Math.floor(pitches.length * 0.99)]) + 3;
+    const MIN_SPAN = 20;
+    if (hi - lo < MIN_SPAN) {
+      const extra = MIN_SPAN - (hi - lo);
+      lo -= Math.floor(extra / 2);
+      hi += Math.ceil(extra / 2);
+    }
+    return { minMidi: lo, maxMidi: hi };
+  }, [tracks]);
 
   const currentTheme = THEMES[theme];
 
@@ -480,8 +634,9 @@ export function App() {
         enharmonic={enharmonic}
         onToggleEnharmonic={() => setEnharmonic(prev => prev === 'sharp' ? 'flat' : 'sharp')}
         zoom={zoom}
-        onZoomIn={() => setZoom(z => Math.min(4.0, z * 1.25))}
-        onZoomOut={() => setZoom(z => Math.max(0.5, z / 1.25))}
+        onZoomIn={() => zoomButton(1.25)}
+        onZoomOut={() => zoomButton(1 / 1.25)}
+        onFitSong={fitSong}
       />
 
       {/* Real-Time Pitch Coaching Feedback Bar */}
@@ -533,6 +688,8 @@ export function App() {
             targetPitchMidi: currentTargetPitch.targetMidi
           }}
           onSeek={handleSeek}
+          onScrollBy={scrollBy}
+          onZoomAt={zoomAt}
         />
 
         {/* Floating Quick Demo Button if no track loaded */}
@@ -555,6 +712,23 @@ export function App() {
           </div>
         )}
       </div>
+
+      {/* Song timeline: scrollbar, overview, zoom */}
+      <TimelineScrollbar
+        duration={maxDuration}
+        currentTime={currentTime}
+        timeOffset={timeOffset}
+        visibleDuration={visibleDuration}
+        minVisibleDuration={MIN_VISIBLE}
+        tracks={tracks}
+        autoFollow={autoFollow}
+        onScrollTo={scrollTo}
+        onSetView={setViewWindow}
+        onZoomIn={() => zoomButton(1.25)}
+        onZoomOut={() => zoomButton(1 / 1.25)}
+        onToggleAutoFollow={() => setAutoFollow(a => !a)}
+        onFitSong={fitSong}
+      />
 
       {/* Bottom: 6 Audio Tracks Management & Filter Matrix */}
       <TrackList

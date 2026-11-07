@@ -7,6 +7,7 @@ import {
   MicOff, 
   ZoomIn, 
   ZoomOut, 
+  Maximize2,
   Palette, 
   SlidersHorizontal,
   Music2
@@ -38,6 +39,7 @@ interface TopBarProps {
   zoom: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onFitSong?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -59,7 +61,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleEnharmonic,
   zoom,
   onZoomIn,
-  onZoomOut
+  onZoomOut,
+  onFitSong
 }) => {
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -195,12 +198,12 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         </div>
 
-        {/* Zoom */}
+        {/* Zoom & Fit */}
         <div className="flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
           <button
             onClick={onZoomOut}
             className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
-            title="Zoom Out"
+            title="Zoom Out (-)"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
@@ -208,10 +211,19 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             onClick={onZoomIn}
             className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
-            title="Zoom In"
+            title="Zoom In (+)"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
+          {onFitSong && (
+            <button
+              onClick={onFitSong}
+              className="p-1 ml-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400 transition"
+              title="Fit Entire Song [↔]"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </header>

@@ -26,6 +26,7 @@ export interface PitchEngineConfig {
   voicingThreshold: number;// Threshold for voiced decision (default: 0.40)
   silenceThreshold: number;// RMS silence threshold (default: 0.015)
   octaveCost: number;      // Octave cost factor (default: 0.01)
+  candidateRatio: number;  // Shortest lag within this fraction of the best peak is the fundamental (default: 0.86)
 }
 
 const NOTE_NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -35,15 +36,17 @@ export class PraatPitchEngine {
   private config: PitchEngineConfig;
   private windowBuffer: Float32Array;
   private windowR: Float32Array; // Autocorrelation of the window function
+  private windowLength = 0;      // Length the window tables were computed for
 
   constructor(config: Partial<PitchEngineConfig> = {}) {
     this.config = {
       sampleRate: config.sampleRate || 44100,
-      pitchFloor: config.pitchFloor || 70,       // Supports down to D2 (~73Hz)
-      pitchCeiling: config.pitchCeiling || 950,   // Supports up to Bb5 (~932Hz)
-      voicingThreshold: config.voicingThreshold || 0.38,
-      silenceThreshold: config.silenceThreshold || 0.012,
-      octaveCost: config.octaveCost || 0.01
+      pitchFloor: config.pitchFloor || 55,       // Supports down to A1 (~55Hz, covers piano & bass)
+      pitchCeiling: config.pitchCeiling || 1200, // Supports up to D6 (~1174Hz, covers soprano & piano)
+      voicingThreshold: config.voicingThreshold || 0.32,
+      silenceThreshold: config.silenceThreshold || 0.005,
+      octaveCost: config.octaveCost || 0.01,
+      candidateRatio: config.candidateRatio || 0.86
     };
 
     const maxWindowSize = 4096;
@@ -62,6 +65,7 @@ export class PraatPitchEngine {
    * window's autocorrelation prevents attenuation at larger lags (lower pitches).
    */
   private precomputeWindow(windowLength: number) {
+    this.windowLength = windowLength;
     if (this.windowBuffer.length < windowLength) {
       this.windowBuffer = new Float32Array(windowLength);
       this.windowR = new Float32Array(windowLength);
@@ -99,7 +103,7 @@ export class PraatPitchEngine {
       return this.emptyFrame(timestamp);
     }
 
-    if (this.windowBuffer.length !== N) {
+    if (this.windowLength !== N) {
       this.precomputeWindow(N);
     }
 
@@ -123,39 +127,34 @@ export class PraatPitchEngine {
     }
 
     // 2. Apply window to DC-centered frame
-    const windowed = new Float32Array(N);
+    const windowed = this.windowedScratch(N);
     for (let i = 0; i < N; i++) {
       windowed[i] = (samples[i] - mean) * this.windowBuffer[i];
     }
 
-    // 3. Compute raw autocorrelation of windowed signal
+    // 3. Lag search range.
+    // Praat requires the analysis window to span at least 3 periods of the lowest pitch:
+    // beyond N/3 the window autocorrelation becomes tiny, and dividing by it amplifies
+    // noise into spurious sub-harmonic peaks (the main source of octave-down errors).
     const minLag = Math.max(2, Math.floor(this.config.sampleRate / this.config.pitchCeiling));
-    const maxLag = Math.min(N - 2, Math.floor(this.config.sampleRate / this.config.pitchFloor));
-
-    let zeroLagEnergy = 0.0;
-    for (let i = 0; i < N; i++) {
-      zeroLagEnergy += windowed[i] * windowed[i];
+    const maxLag = Math.min(Math.floor(N / 3), Math.floor(this.config.sampleRate / this.config.pitchFloor));
+    if (maxLag <= minLag + 2) {
+      return this.emptyFrame(timestamp, rms);
     }
-    if (zeroLagEnergy === 0) {
+
+    // Autocorrelation via FFT (O(N log N) instead of O(N * maxLag))
+    const rawR = this.autocorrelate(windowed, N);
+    const zeroLagEnergy = rawR[0];
+    if (zeroLagEnergy <= 0) {
       return this.emptyFrame(timestamp, rms);
     }
 
     const r = new Float32Array(maxLag + 2);
     r[0] = 1.0;
-
     for (let tau = 1; tau <= maxLag + 1; tau++) {
-      let sum = 0.0;
-      for (let i = 0; i < N - tau; i++) {
-        sum += windowed[i] * windowed[i + tau];
-      }
-
       // Praat normalization: divide by window autocorrelation to cancel tapering
       const wR = this.windowR[tau];
-      if (wR > 0.01) {
-        r[tau] = sum / (zeroLagEnergy * wR);
-      } else {
-        r[tau] = 0.0;
-      }
+      r[tau] = wR > 0.01 ? rawR[tau] / (zeroLagEnergy * wR) : 0.0;
     }
 
     // 4. Find candidates with parabolic and sinc interpolation
@@ -172,22 +171,18 @@ export class PraatPitchEngine {
         // Parabolic refinement
         const dr = 0.5 * (r[tau + 1] - r[tau - 1]);
         const d2r = (r[tau] - r[tau - 1]) + (r[tau] - r[tau + 1]);
-        
+
         let refinedTau = tau;
         if (d2r > 0) {
           refinedTau = tau + dr / d2r;
         }
 
         // Sinc interpolation around refinedTau for sub-sample continuous accuracy
-        const sincRefinedStrength = this.sincInterpolate(r, refinedTau);
-        if (sincRefinedStrength > maxStrength) {
-          maxStrength = sincRefinedStrength;
+        const strength = this.sincInterpolate(r, refinedTau);
+        if (strength > maxStrength) {
+          maxStrength = strength;
         }
-
-        candidates.push({
-          tau: refinedTau,
-          strength: sincRefinedStrength
-        });
+        candidates.push({ tau: refinedTau, strength });
       }
     }
 
@@ -195,11 +190,19 @@ export class PraatPitchEngine {
       return this.emptyFrame(timestamp, rms);
     }
 
-    // Praat Fundamental Lag Selection:
-    // The earliest candidate (highest frequency) within 82% of max correlation peak
-    // is the true fundamental period, preventing sub-octave multiples (2T, 3T, 4T).
-    const fundamental = candidates.find(c => c.strength >= 0.82 * maxStrength) || candidates[0];
-
+    // 5. Candidate selection.
+    // A periodic signal correlates almost equally well at T, 2T, 3T..., so "strongest peak"
+    // is essentially random between the fundamental and its sub-harmonics. The fundamental
+    // is the SHORTEST lag whose correlation is close to the best one (Praat's octave cost
+    // expresses the same preference for higher-frequency candidates).
+    const acceptance = this.config.candidateRatio * maxStrength;
+    let fundamental = candidates[0];
+    for (const c of candidates) {
+      if (c.strength >= acceptance) {
+        fundamental = c;
+        break;
+      }
+    }
     const bestTau = fundamental.tau;
     const bestStrength = fundamental.strength;
 
@@ -217,6 +220,80 @@ export class PraatPitchEngine {
       strength: Math.min(1.0, Math.max(0.0, bestStrength)),
       intensity: rms
     };
+  }
+
+  private windowedBuf: Float32Array = new Float32Array(0);
+  private fftRe: Float64Array = new Float64Array(0);
+  private fftIm: Float64Array = new Float64Array(0);
+
+  private windowedScratch(N: number): Float32Array {
+    if (this.windowedBuf.length !== N) {
+      this.windowedBuf = new Float32Array(N);
+    }
+    return this.windowedBuf;
+  }
+
+  /**
+   * Linear (non-circular) autocorrelation of x[0..N) via zero-padded FFT.
+   * Returns un-normalized r[tau] for tau in [0, N).
+   */
+  private autocorrelate(x: Float32Array, N: number): Float64Array {
+    let size = 1;
+    while (size < 2 * N) size <<= 1;
+    if (this.fftRe.length !== size) {
+      this.fftRe = new Float64Array(size);
+      this.fftIm = new Float64Array(size);
+    }
+    const re = this.fftRe;
+    const im = this.fftIm;
+    re.fill(0);
+    im.fill(0);
+    for (let i = 0; i < N; i++) re[i] = x[i];
+
+    PraatPitchEngine.fft(re, im, false);
+    for (let k = 0; k < size; k++) {
+      re[k] = re[k] * re[k] + im[k] * im[k];
+      im[k] = 0;
+    }
+    PraatPitchEngine.fft(re, im, true);
+    // Inverse FFT is unscaled; r[0] normalization later makes the scale irrelevant,
+    // but keep values consistent anyway.
+    for (let k = 0; k < N; k++) re[k] /= size;
+    return re;
+  }
+
+  /** In-place iterative radix-2 FFT. */
+  private static fft(re: Float64Array, im: Float64Array, inverse: boolean) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    const sign = inverse ? 1 : -1;
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = (sign * 2 * Math.PI) / len;
+      const wRe = Math.cos(ang);
+      const wIm = Math.sin(ang);
+      const half = len >> 1;
+      for (let i = 0; i < n; i += len) {
+        let cRe = 1, cIm = 0;
+        for (let k = 0; k < half; k++) {
+          const aRe = re[i + k], aIm = im[i + k];
+          const bRe = re[i + k + half] * cRe - im[i + k + half] * cIm;
+          const bIm = re[i + k + half] * cIm + im[i + k + half] * cRe;
+          re[i + k] = aRe + bRe; im[i + k] = aIm + bIm;
+          re[i + k + half] = aRe - bRe; im[i + k + half] = aIm - bIm;
+          const nRe = cRe * wRe - cIm * wIm;
+          cIm = cRe * wIm + cIm * wRe;
+          cRe = nRe;
+        }
+      }
+    }
   }
 
   /**
