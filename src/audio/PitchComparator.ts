@@ -11,7 +11,8 @@ export type PitchAccuracyStatus = 'in_tune' | 'flat' | 'sharp' | 'unvoiced_mic' 
 
 export interface CoachingFeedback {
   status: PitchAccuracyStatus;
-  centsDiff: number;           // Mic minus Target in cents (e.g. -24 = 24 cents flat)
+  centsDiff: number;           // Mic minus Target in cents, smoothed and rounded to the precision step
+  needleCents?: number;        // Smoothed (unrounded) cents for the gauge needle
   suggestion: string;          // Human-readable action: e.g. "Sing Higher ↑ (+24c)"
   targetNote: string;          // e.g. "G4"
   micNote: string;             // e.g. "F#4"
@@ -20,8 +21,20 @@ export interface CoachingFeedback {
   micHz: number;
 }
 
+const SMOOTHING = 0.35;      // EMA weight of a new frame (~120 ms time constant at ~46 ms frames)
+const RESET_JUMP_CENTS = 60; // A jump this large (new note) restarts the smoothing
+
 export class PitchComparator {
-  public toleranceCents: number = 10; // Cents threshold for "in tune" (typically ±10c)
+  /**
+   * Precision in cents (1-10): the in-tune window (±) and the step the readout snaps to.
+   * 10 = relaxed and calm, 1 = strict and fine-grained.
+   */
+  public toleranceCents: number = 10;
+
+  // Smoothing state
+  private smoothed: number | null = null;
+  private smoothedTarget: number | null = null;
+  private wasInTune = false;
   
   // Rolling accuracy stats
   private inTuneFrames: number = 0;
@@ -30,6 +43,7 @@ export class PitchComparator {
   private maxHistory: number = 150; // ~3-5 seconds rolling window
 
   public resetScore() {
+    this.smoothed = null;
     this.inTuneFrames = 0;
     this.totalVoicedFrames = 0;
     this.recentScores = [];
@@ -41,6 +55,8 @@ export class PitchComparator {
   public compare(micFrame: PitchFrame, targetMidi: number, targetHz: number, targetNoteName: string = ''): CoachingFeedback {
     // Both or either unvoiced
     if (!micFrame.voiced || micFrame.frequency <= 0) {
+      this.smoothed = null;
+      this.wasInTune = false;
       return {
         status: 'unvoiced_mic',
         centsDiff: 0,
@@ -54,6 +70,7 @@ export class PitchComparator {
     }
 
     if (targetHz <= 0 || targetMidi <= 0) {
+      this.smoothed = null;
       return {
         status: 'unvoiced_ref',
         centsDiff: 0,
@@ -66,27 +83,42 @@ export class PitchComparator {
       };
     }
 
-    // Exact cent difference: 1200 * log2(micFreq / targetFreq)
-    const exactMidiDiff = micFrame.exactMidi - targetMidi;
-    const centsDiff = Math.round(exactMidiDiff * 100 * 10) / 10; // 1-cent rounded
+    // Cent difference, smoothed over ~0.12 s so natural voice wobble does not make it jump.
+    // Restart the smoothing when the target note changes or the voice jumps to another note.
+    const rawCents = (micFrame.exactMidi - targetMidi) * 100;
+    const targetKey = Math.round(targetMidi);
+    if (this.smoothed === null || this.smoothedTarget !== targetKey || Math.abs(rawCents - this.smoothed) > RESET_JUMP_CENTS) {
+      this.smoothed = rawCents;
+    } else {
+      this.smoothed += SMOOTHING * (rawCents - this.smoothed);
+    }
+    this.smoothedTarget = targetKey;
+
+    // Readout snaps to the precision step (10 -> 0, ±10, ±20…; 1 -> every cent)
+    const step = Math.max(1, Math.min(10, this.toleranceCents));
+    const smoothed = this.smoothed;
+    const centsDiff = (Math.round(smoothed / step) * step) || 0;
 
     let status: PitchAccuracyStatus = 'in_tune';
-    let suggestion = '✓ Perfect Pitch!';
+    let suggestion = '✓ In tune';
 
     // Show small errors in cents, large ones in semitones
     const amount = Math.abs(centsDiff) >= 100
       ? `${Math.round(Math.abs(centsDiff) / 100)} semitone${Math.round(Math.abs(centsDiff) / 100) === 1 ? '' : 's'}`
       : `${Math.abs(centsDiff)}c`;
-    if (centsDiff > this.toleranceCents) {
+    // Hysteresis: once in tune, stay in tune until ~30% past the window (no flicker at the edge)
+    const limit = this.wasInTune ? step + Math.max(1, step * 0.3) : step;
+    if (smoothed > limit) {
       status = 'sharp';
       suggestion = `Sing Lower ↓ (${amount} sharp)`;
-    } else if (centsDiff < -this.toleranceCents) {
+    } else if (smoothed < -limit) {
       status = 'flat';
       suggestion = `Sing Higher ↑ (${amount} flat)`;
     }
 
     // Record score
     const isInTune = status === 'in_tune';
+    this.wasInTune = isInTune;
     this.totalVoicedFrames++;
     if (isInTune) this.inTuneFrames++;
 
@@ -98,6 +130,7 @@ export class PitchComparator {
     return {
       status,
       centsDiff,
+      needleCents: smoothed,
       suggestion,
       targetNote: targetNoteName,
       micNote: micFrame.noteName,

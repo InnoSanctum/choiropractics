@@ -4,11 +4,12 @@ import { CoachingHUDProps } from '../CoachingHUD';
 
 /** One-line coaching bar for phones: target, your note, cents needle, score. */
 export const MobileHUD: React.FC<CoachingHUDProps & { compact?: boolean }> = ({
-  feedback, hasMainTrack, tunerMode = false, referenceA4 = 440, compact = false
+  feedback, hasMainTrack, tunerMode = false, referenceA4 = 440, compact = false, precisionCents = 10
 }) => {
   const { status, centsDiff, targetNote, micNote, inTunePercentage, micHz, targetHz } = feedback;
   const active = micHz > 0 && targetHz > 0;
-  const clamped = Math.max(-50, Math.min(50, centsDiff));
+  const clamped = Math.max(-50, Math.min(50, feedback.needleCents ?? centsDiff));
+  const zone = Math.max(0.5, Math.min(50, precisionCents));
   const needle = ((clamped + 50) / 100) * 100;
 
   const tone = status === 'in_tune' ? 'emerald' : status === 'flat' ? 'amber' : status === 'sharp' ? 'purple' : 'slate';
@@ -33,7 +34,7 @@ export const MobileHUD: React.FC<CoachingHUDProps & { compact?: boolean }> = ({
 
   const gauge = (
     <div className="relative h-2.5 bg-slate-950 rounded-full border border-slate-800 overflow-hidden">
-      <div className="absolute left-[40%] right-[40%] h-full bg-emerald-500/20" />
+      <div className="absolute h-full bg-emerald-500/20" style={{ left: `${50 - zone}%`, right: `${50 - zone}%` }} />
       <div className="absolute left-1/2 -translate-x-1/2 w-0.5 h-full bg-emerald-400/60" />
       {active && (
         <div

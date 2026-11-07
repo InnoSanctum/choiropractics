@@ -3,7 +3,7 @@ import {
   Play, Pause, Square, Mic, MicOff, Activity, ListMusic, Music, Gauge, Settings, X, Trash2, Headphones
 } from 'lucide-react';
 import { TopBarProps } from '../TopBar';
-import { CoachingHUDProps } from '../CoachingHUD';
+import { CoachingHUDProps, PrecisionSlider } from '../CoachingHUD';
 import { HarmonyPanel, HarmonyPanelProps } from '../HarmonyPanel';
 import { PracticePanel, PracticePanelProps } from '../PracticePanel';
 import { TunerPanel, TunerPanelProps } from '../TunerPanel';
@@ -173,6 +173,16 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
                 {sheet === 'settings' && (
                   <div className="flex flex-col gap-4 text-sm">
                     {isTuner && <TunerPanel {...tuner} embedded />}
+
+                    {hud.onPrecisionChange && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase font-bold text-slate-400">Pitch precision</span>
+                        <PrecisionSlider value={hud.precisionCents ?? 10} onChange={hud.onPrecisionChange} large />
+                        <span className="text-xs text-slate-500">
+                          How close counts as in tune, and how finely the cents are shown. ±10 is relaxed, ±1 is strict.
+                        </span>
+                      </div>
+                    )}
 
                     {topBar.inputDevices.length > 0 && (
                       <label className="flex flex-col gap-1">

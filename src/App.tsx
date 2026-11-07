@@ -166,6 +166,21 @@ export function App() {
   const keyTouchedRef = useRef(false); // user picked a key manually -> don't auto-apply detection
   // Octave-free scoring: singing the target in any octave counts (e.g. men singing a melody an octave down)
   const [anyOctave, setAnyOctave] = useState(false);
+  // Pitch precision (cents): in-tune window and readout step, remembered between visits
+  const [precisionCents, setPrecisionCents] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('choiro.precisionCents'));
+      return v >= 1 && v <= 10 ? v : 10;
+    } catch {
+      return 10;
+    }
+  });
+  useEffect(() => {
+    comparatorRef.current.toleranceCents = precisionCents;
+    comparatorRef.current.resetScore();
+    try { localStorage.setItem('choiro.precisionCents', String(precisionCents)); } catch { /* storage unavailable */ }
+  }, [precisionCents]);
+  const tunerNoteRef = useRef<number | null>(null);
   const anyOctaveRef = useRef(anyOctave);
   anyOctaveRef.current = anyOctave;
 
@@ -304,9 +319,13 @@ export function App() {
         setCoachingFeedback(comparatorRef.current.compare(frame, 0, 0, '—'));
         return;
       }
-      // Nearest equal-tempered note for the calibrated A4
+      // Nearest equal-tempered note for the calibrated A4, with hysteresis: between two notes the
+      // name stays on the current one until the voice is clearly (> 60 cents) away from it
       const calOffset = 12 * Math.log2(referenceA4Ref.current / 440);
-      const nearest = Math.round(frame.exactMidi - calOffset);
+      const calMidi = frame.exactMidi - calOffset;
+      const previous = tunerNoteRef.current;
+      const nearest = previous !== null && Math.abs(calMidi - previous) < 0.6 ? previous : Math.round(calMidi);
+      tunerNoteRef.current = nearest;
       const targetMidi = nearest + calOffset;
       const name = midiName(nearest, enharmonicRef.current);
       const fb = comparatorRef.current.compare(frame, targetMidi, PraatPitchEngine.midiToFrequency(targetMidi), name);
@@ -1017,7 +1036,9 @@ export function App() {
     feedback: coachingFeedback,
     hasMainTrack: !!mainTrack,
     tunerMode: isTuner,
-    referenceA4
+    referenceA4,
+    precisionCents,
+    onPrecisionChange: setPrecisionCents
   };
 
   const harmonyProps: HarmonyPanelProps = {

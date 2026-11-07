@@ -8,13 +8,19 @@ export interface CoachingHUDProps {
   tunerMode?: boolean;
   /** Tuner calibration, shown next to the note */
   referenceA4?: number;
+  /** Precision in cents (1-10): in-tune window and readout step */
+  precisionCents?: number;
+  onPrecisionChange?: (cents: number) => void;
 }
 
-export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack, tunerMode = false, referenceA4 = 440 }) => {
+export const CoachingHUD: React.FC<CoachingHUDProps> = ({
+  feedback, hasMainTrack, tunerMode = false, referenceA4 = 440, precisionCents = 10, onPrecisionChange
+}) => {
   const { status, centsDiff, suggestion, targetNote, micNote, inTunePercentage, targetHz, micHz } = feedback;
 
   // Determine meter needle position: -50 cents to +50 cents -> 0% to 100%
-  const clampedCents = Math.max(-50, Math.min(50, centsDiff));
+  const clampedCents = Math.max(-50, Math.min(50, feedback.needleCents ?? centsDiff));
+  const zone = Math.max(0.5, Math.min(50, precisionCents)); // ± cents shown as the green zone
   const meterPercent = ((clampedCents + 50) / 100) * 100;
 
   let statusBg = 'bg-slate-900/80 border-slate-800';
@@ -83,7 +89,7 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
         {/* Visual Cents Gauge */}
         <div className="w-full h-3 bg-slate-950 rounded-full border border-slate-800 relative overflow-hidden flex items-center">
           {/* Safe in-tune zone (±10 cents) */}
-          <div className="absolute left-[40%] right-[40%] h-full bg-emerald-500/20" />
+          <div className="absolute h-full bg-emerald-500/20" style={{ left: `${50 - zone}%`, right: `${50 - zone}%` }} />
           {/* Center line */}
           <div className="absolute left-1/2 -translate-x-1/2 w-0.5 h-full bg-emerald-400/60" />
 
@@ -128,6 +134,11 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
           <span>{suggestion}</span>
         </div>
 
+        {/* Precision */}
+        {onPrecisionChange && (
+          <PrecisionSlider value={precisionCents} onChange={onPrecisionChange} />
+        )}
+
         {/* Accuracy Score */}
         <div className="bg-slate-950/70 border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-2">
           <Flame className="w-3.5 h-3.5 text-orange-400" />
@@ -140,3 +151,26 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
     </div>
   );
 };
+
+/** Precision slider: ±10 cents (relaxed, calm readout) down to ±1 cent (strict, every cent). */
+export const PrecisionSlider: React.FC<{ value: number; onChange: (cents: number) => void; large?: boolean }> = ({ value, onChange, large = false }) => (
+  <label
+    className={`flex items-center gap-2 bg-slate-950/70 border border-slate-800 rounded-lg ${large ? 'px-3 py-2 w-full' : 'px-2.5 py-1.5'}`}
+    title="How close counts as in tune, and the step the cents readout moves in. Left: relaxed (±10c). Right: strict (±1c)."
+  >
+    {!large && <span className="text-[9px] uppercase font-bold text-slate-400 leading-tight">Precision</span>}
+    <span className="text-[10px] text-slate-500">±10</span>
+    <input
+      type="range"
+      min={1}
+      max={10}
+      step={1}
+      // Reversed so that moving right = stricter
+      value={11 - value}
+      onChange={(e) => onChange(11 - Number(e.target.value))}
+      className={`${large ? 'flex-1' : 'w-20'} accent-emerald-400 cursor-pointer`}
+    />
+    <span className="text-[10px] text-slate-500">±1</span>
+    <span className="font-mono text-xs font-bold text-emerald-400 w-9 text-right">±{value}c</span>
+  </label>
+);
