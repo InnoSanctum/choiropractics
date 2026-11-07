@@ -73,12 +73,16 @@ export class PitchComparator {
     let status: PitchAccuracyStatus = 'in_tune';
     let suggestion = '✓ Perfect Pitch!';
 
+    // Show small errors in cents, large ones in semitones
+    const amount = Math.abs(centsDiff) >= 100
+      ? `${Math.round(Math.abs(centsDiff) / 100)} semitone${Math.round(Math.abs(centsDiff) / 100) === 1 ? '' : 's'}`
+      : `${Math.abs(centsDiff)}c`;
     if (centsDiff > this.toleranceCents) {
       status = 'sharp';
-      suggestion = `Sing Lower ↓ (${Math.abs(centsDiff)}c sharp)`;
+      suggestion = `Sing Lower ↓ (${amount} sharp)`;
     } else if (centsDiff < -this.toleranceCents) {
       status = 'flat';
-      suggestion = `Sing Higher ↑ (${Math.abs(centsDiff)}c flat)`;
+      suggestion = `Sing Higher ↑ (${amount} flat)`;
     }
 
     // Record score

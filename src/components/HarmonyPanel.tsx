@@ -22,6 +22,9 @@ interface HarmonyPanelProps {
 
   detectedKey: DetectedKeyResult | null;
   onApplyDetectedKey: () => void;
+
+  anyOctave: boolean;
+  onToggleAnyOctave: () => void;
 }
 
 const ROOT_NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -45,7 +48,9 @@ export const HarmonyPanel: React.FC<HarmonyPanelProps> = ({
   customSemitones,
   onChangeCustomSemitones,
   detectedKey,
-  onApplyDetectedKey
+  onApplyDetectedKey,
+  anyOctave,
+  onToggleAnyOctave
 }) => {
   return (
     <div className="mx-4 my-2 p-3 bg-slate-900/60 border border-slate-800 rounded-xl backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -65,17 +70,33 @@ export const HarmonyPanel: React.FC<HarmonyPanelProps> = ({
               if (p) onSelectPreset(p);
             }}
             className="bg-transparent text-slate-200 font-medium outline-none cursor-pointer pr-1"
+            title={activePreset.description}
           >
-            {STANDARD_HARMONY_PRESETS.map((p) => (
-              <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">
-                {p.name}
-              </option>
+            {STANDARD_HARMONY_PRESETS.filter(p => p.group === 'unison').map((p) => (
+              <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">{p.name}</option>
             ))}
+            <optgroup label="Smart — follows the key & mode" className="bg-slate-900 text-indigo-300">
+              {STANDARD_HARMONY_PRESETS.filter(p => p.group === 'smart').map((p) => (
+                <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">{p.name}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Fixed — exact semitones" className="bg-slate-900 text-indigo-300">
+              {STANDARD_HARMONY_PRESETS.filter(p => p.group === 'fixed').map((p) => (
+                <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">{p.name}</option>
+              ))}
+            </optgroup>
           </select>
         </div>
 
-        {/* Diatonic Scale / Mode Controls (Enabled if Diatonic preset selected) */}
-        <div className="flex items-center gap-2 bg-slate-950/70 p-1 rounded-lg border border-slate-800">
+        {/* Key & mode: used by Smart intervals (and key-aware display) */}
+        <div
+          className={`flex items-center gap-2 bg-slate-950/70 p-1 rounded-lg border transition ${
+            activePreset.group === 'smart' ? 'border-indigo-500/60' : 'border-slate-800 opacity-60'
+          }`}
+          title={activePreset.group === 'smart'
+            ? 'Smart intervals are calculated inside this key & mode'
+            : 'Only used by Smart intervals'}
+        >
           <span className="text-[10px] uppercase font-bold text-slate-400 px-1">Scale:</span>
 
           {/* Root Key */}
@@ -105,6 +126,17 @@ export const HarmonyPanel: React.FC<HarmonyPanelProps> = ({
           </select>
         </div>
 
+        {/* Octave-free scoring */}
+        <label
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border cursor-pointer select-none transition ${
+            anyOctave ? 'bg-indigo-950/70 border-indigo-500/60 text-indigo-200' : 'bg-slate-950/70 border-slate-800 text-slate-300'
+          }`}
+          title="Count the right note in any octave as correct - e.g. men singing a melody an octave below the reference"
+        >
+          <input type="checkbox" checked={anyOctave} onChange={onToggleAnyOctave} className="accent-indigo-400 cursor-pointer" />
+          <span>Any octave</span>
+        </label>
+
         {/* Custom Semitone Slider (if custom selected) */}
         {activePreset.id === 'custom_chromatic' && (
           <div className="flex items-center gap-2 bg-slate-950/70 px-2 py-1 rounded-lg border border-slate-800">
@@ -133,12 +165,16 @@ export const HarmonyPanel: React.FC<HarmonyPanelProps> = ({
             <span className="font-bold text-indigo-300 font-mono">{detectedKey.fullKeyName}</span>
             <span className="text-slate-400 text-[10px] ml-1">({Math.round(detectedKey.confidence * 100)}% match)</span>
           </div>
-          <button
-            onClick={onApplyDetectedKey}
-            className="ml-1 bg-indigo-500 hover:bg-indigo-400 text-white font-semibold px-2 py-0.5 rounded text-[10px] transition active:scale-95 shadow"
-          >
-            Apply Mode
-          </button>
+          {detectedKey.rootIndex === rootIndex && detectedKey.mode === activeMode ? (
+            <span className="ml-1 text-[10px] text-emerald-400 font-semibold">✓ in use</span>
+          ) : (
+            <button
+              onClick={onApplyDetectedKey}
+              className="ml-1 bg-indigo-500 hover:bg-indigo-400 text-white font-semibold px-2 py-0.5 rounded text-[10px] transition active:scale-95 shadow"
+            >
+              Use this key
+            </button>
+          )}
         </div>
       )}
     </div>

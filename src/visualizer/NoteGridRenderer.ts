@@ -19,7 +19,28 @@ export interface RendererOptions {
   visibleDuration: number;// e.g. 8.0 seconds visible horizontally
   timeOffset: number;     // Current scroll position in seconds
   currentTime: number;    // Playback playhead position
-  targetPitchMidi?: number; // Harmonized target pitch
+  /** Harmony target notes (reference melody transposed by the active interval) */
+  harmonyNotes?: HarmonyNote[];
+  harmonyColor?: string;
+  /** Beat grid (metronome tempo); bar lines are drawn when set */
+  beatGrid?: { bpm: number; firstBeat: number; beatsPerBar: number } | null;
+  /** Row to highlight (tuner mode: nearest note) */
+  highlightMidi?: number | null;
+  /** Hide the playhead (tuner mode) */
+  hidePlayhead?: boolean;
+}
+
+export interface HarmonyNote {
+  startTime: number;
+  endTime: number;
+  midi: number;
+}
+
+/** One continuous pass of singing into the microphone. */
+export interface MicTake {
+  id: number;
+  color: string;
+  frames: PitchFrame[];
 }
 
 export interface NoteSegment {
@@ -52,7 +73,7 @@ export class NoteGridRenderer {
 
   public render(
     tracks: AudioTrackState[],
-    micHistory: PitchFrame[],
+    takes: MicTake[],
     options: RendererOptions,
     logicalWidth?: number,
     logicalHeight?: number
@@ -83,6 +104,16 @@ export class NoteGridRenderer {
 
     // 2. Draw Horizontal Semitone Grid & Note Labels
     this.drawGrid(ctx, options, noteAxisWidth, plotWidth, plotHeight, midiToY);
+    if (options.highlightMidi != null) {
+      const rowH = plotHeight / midiRange;
+      ctx.fillStyle = options.theme.playhead;
+      ctx.globalAlpha = 0.12;
+      ctx.fillRect(noteAxisWidth, midiToY(options.highlightMidi) - rowH / 2, plotWidth, rowH);
+      ctx.globalAlpha = 1;
+    }
+    if (options.beatGrid) {
+      this.drawBeatGrid(ctx, options, noteAxisWidth, plotWidth, plotHeight, timeToX);
+    }
     this.drawTimeRuler(ctx, options, noteAxisWidth, plotWidth, plotHeight, timeToX);
 
     // 3. Render Pre-Analyzed Audio Tracks
@@ -98,14 +129,21 @@ export class NoteGridRenderer {
       }
     }
 
-    // 4. Render Live Microphone Trail
-    if (micHistory.length > 0) {
-      this.renderMicTrail(ctx, micHistory, theme.micTrail, options, timeToX, midiToY);
+    // Harmony target notes (what the singer should sing when an interval is selected)
+    if (options.harmonyNotes && options.harmonyNotes.length > 0) {
+      this.renderHarmonyNotes(ctx, options, timeToX, midiToY, plotHeight, midiRange);
     }
+
+    // 4. Render microphone takes (older takes faded, latest take bright)
+    takes.forEach((take, i) => {
+      if (take.frames.length > 0) {
+        this.renderMicTrail(ctx, take.frames, take.color, i === takes.length - 1, options, timeToX, midiToY);
+      }
+    });
 
     // 5. Draw Playhead Vertical Line
     const playheadX = timeToX(options.currentTime);
-    if (playheadX >= noteAxisWidth && playheadX <= width) {
+    if (!options.hidePlayhead && playheadX >= noteAxisWidth && playheadX <= width) {
       ctx.strokeStyle = theme.playhead;
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
@@ -124,6 +162,89 @@ export class NoteGridRenderer {
       ctx.fill();
     }
 
+    ctx.restore();
+  }
+
+  /**
+   * Draws metronome bar lines (and beat lines when zoomed in far enough).
+   */
+  private drawBeatGrid(
+    ctx: CanvasRenderingContext2D,
+    options: RendererOptions,
+    axisWidth: number,
+    plotWidth: number,
+    plotHeight: number,
+    timeToX: (t: number) => number
+  ) {
+    const grid = options.beatGrid;
+    if (!grid || grid.bpm <= 0) return;
+    const beat = 60 / grid.bpm;
+    const pxPerBeat = (plotWidth / Math.max(0.01, options.visibleDuration)) * beat;
+    const showBeats = pxPerBeat >= 14;
+    if (!showBeats && pxPerBeat * grid.beatsPerBar < 10) return;
+
+    const first = Math.ceil((options.timeOffset - grid.firstBeat) / beat);
+    const last = Math.floor((options.timeOffset + options.visibleDuration - grid.firstBeat) / beat);
+    ctx.save();
+    ctx.strokeStyle = options.theme.playhead;
+    for (let i = first; i <= last; i++) {
+      const isBar = ((i % grid.beatsPerBar) + grid.beatsPerBar) % grid.beatsPerBar === 0;
+      if (!isBar && !showBeats) continue;
+      const x = Math.round(timeToX(grid.firstBeat + i * beat)) + 0.5;
+      if (x < axisWidth) continue;
+      ctx.globalAlpha = isBar ? 0.22 : 0.08;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(isBar ? [] : [2, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, 16);
+      ctx.lineTo(x, plotHeight);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Draws harmony target notes as dashed outline bars.
+   */
+  private renderHarmonyNotes(
+    ctx: CanvasRenderingContext2D,
+    options: RendererOptions,
+    timeToX: (t: number) => number,
+    midiToY: (m: number) => number,
+    plotHeight: number,
+    midiRange: number
+  ) {
+    const start = options.timeOffset - 0.5;
+    const end = options.timeOffset + options.visibleDuration + 0.5;
+    const color = options.harmonyColor || '#a78bfa';
+    const rowHeight = plotHeight / midiRange;
+    const h = Math.max(6, Math.min(rowHeight * 0.8, 16));
+
+    ctx.save();
+    for (const n of options.harmonyNotes!) {
+      if (n.endTime < start || n.startTime > end) continue;
+      const x1 = timeToX(n.startTime);
+      const w = Math.max(8, timeToX(n.endTime) - x1);
+      const y = midiToY(n.midi);
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(x1, y - h / 2, w, h, 4);
+      ctx.fill();
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (w >= 22) {
+        ctx.fillStyle = color;
+        ctx.font = '600 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(NoteGridRenderer.midiName(Math.round(n.midi), options.enharmonic), x1 + 2, y + h / 2 + 2);
+      }
+    }
     ctx.restore();
   }
 
@@ -564,55 +685,67 @@ export class NoteGridRenderer {
   }
 
   /**
-   * Renders the real-time microphone live pitch trail
+   * Renders one microphone take. The line is broken on unvoiced frames and on time gaps,
+   * so a take never draws a connecting line back across the screen.
    */
   private renderMicTrail(
     ctx: CanvasRenderingContext2D,
-    micHistory: PitchFrame[],
+    frames: PitchFrame[],
     color: string,
+    isActive: boolean,
     options: RendererOptions,
     timeToX: (t: number) => number,
     midiToY: (m: number) => number
   ) {
-    if (micHistory.length === 0) return;
+    const MAX_GAP = 0.15; // seconds; larger jumps start a new line segment
+    const start = options.timeOffset - 1;
+    const end = options.timeOffset + options.visibleDuration + 1;
 
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3.5;
+    ctx.lineWidth = isActive ? 3.5 : 2.5;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 8; // Glowing mic trail
+    ctx.globalAlpha = isActive ? 1 : 0.55;
+    if (isActive) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+    }
 
     ctx.beginPath();
     let drawing = false;
-
-    for (let i = 0; i < micHistory.length; i++) {
-      const f = micHistory[i];
-      if (f.voiced && f.frequency > 0) {
-        const x = timeToX(f.timestamp);
-        const y = midiToY(f.exactMidi);
-        if (!drawing) {
-          ctx.moveTo(x, y);
-          drawing = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-      } else {
+    let prevTime = -Infinity;
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.timestamp < start || f.timestamp > end) {
         drawing = false;
+        prevTime = f.timestamp;
+        continue;
+      }
+      const gap = f.timestamp - prevTime;
+      prevTime = f.timestamp;
+      if (!f.voiced || f.frequency <= 0) {
+        drawing = false;
+        continue;
+      }
+      const x = timeToX(f.timestamp);
+      const y = midiToY(f.exactMidi);
+      if (!drawing || gap > MAX_GAP || gap < 0) {
+        ctx.moveTo(x, y);
+        drawing = true;
+      } else {
+        ctx.lineTo(x, y);
       }
     }
     ctx.stroke();
 
-    // Draw live head cursor dot on the most recent frame
-    const latest = micHistory[micHistory.length - 1];
-    if (latest && latest.voiced && latest.frequency > 0) {
-      const curX = timeToX(latest.timestamp);
-      const curY = midiToY(latest.exactMidi);
-
+    // Live head dot on the most recent frame of the active take
+    const latest = frames[frames.length - 1];
+    if (isActive && latest && latest.voiced && latest.frequency > 0) {
+      ctx.shadowBlur = 0;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(curX, curY, 5, 0, Math.PI * 2);
+      ctx.arc(timeToX(latest.timestamp), midiToY(latest.exactMidi), 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = color;
       ctx.lineWidth = 2.5;

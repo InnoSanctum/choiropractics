@@ -5,9 +5,12 @@ import { CoachingFeedback } from '../audio/PitchComparator';
 interface CoachingHUDProps {
   feedback: CoachingFeedback;
   hasMainTrack: boolean;
+  tunerMode?: boolean;
+  /** Tuner calibration, shown next to the note */
+  referenceA4?: number;
 }
 
-export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack }) => {
+export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack, tunerMode = false, referenceA4 = 440 }) => {
   const { status, centsDiff, suggestion, targetNote, micNote, inTunePercentage, targetHz, micHz } = feedback;
 
   // Determine meter needle position: -50 cents to +50 cents -> 0% to 100%
@@ -42,7 +45,9 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
             <Target className="w-4 h-4 text-indigo-400" />
           </div>
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Target</div>
+            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+              {tunerMode ? `Nearest note (A4 = ${referenceA4} Hz)` : 'Target'}
+            </div>
             <div className="text-lg font-bold font-mono text-indigo-300 flex items-baseline gap-1">
               {targetNote || '—'}
               {targetHz > 0 && <span className="text-[10px] font-normal text-slate-400">{Math.round(targetHz)}Hz</span>}
@@ -58,7 +63,7 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
             <Mic className="w-4 h-4 text-rose-400" />
           </div>
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Your Voice</div>
+            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">{tunerMode ? 'Detected' : 'Your Voice'}</div>
             <div className="text-lg font-bold font-mono text-rose-300 flex items-baseline gap-1">
               {micNote || '—'}
               {micHz > 0 && <span className="text-[10px] font-normal text-slate-400">{micHz.toFixed(1)}Hz</span>}
@@ -101,11 +106,15 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({ feedback, hasMainTrack
         <div className="mt-1 font-mono text-xs font-semibold">
           {micHz > 0 && targetHz > 0 ? (
             <span className={status === 'in_tune' ? 'text-emerald-400' : status === 'flat' ? 'text-amber-400' : 'text-purple-400'}>
-              {centsDiff > 0 ? `+${centsDiff}` : centsDiff} cents
+              {Math.abs(centsDiff) >= 100
+                ? `${centsDiff > 0 ? '+' : '−'}${(Math.abs(centsDiff) / 100).toFixed(1)} semitones`
+                : `${centsDiff > 0 ? '+' : ''}${centsDiff} cents`}
             </span>
           ) : (
             <span className="text-slate-500 text-[11px]">
-              {hasMainTrack ? 'Awaiting voice or playback' : 'Select a track with ⭐ to enable pitch coaching'}
+              {tunerMode
+                ? 'Sing or play a note'
+                : hasMainTrack ? 'Awaiting voice or playback' : 'Select a track with ⭐ to enable pitch coaching'}
             </span>
           )}
         </div>

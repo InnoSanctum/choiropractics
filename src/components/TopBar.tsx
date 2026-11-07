@@ -5,9 +5,9 @@ import {
   Square, 
   Mic, 
   MicOff, 
-  ZoomIn, 
-  ZoomOut, 
-  Maximize2,
+  Trash2,
+  Layers,
+  Activity,
   Palette, 
   SlidersHorizontal,
   Music2
@@ -36,10 +36,13 @@ interface TopBarProps {
   enharmonic: 'sharp' | 'flat';
   onToggleEnharmonic: () => void;
 
-  zoom: number;
-  onZoomIn: () => void;
-  onZoomOut: () => void;
-  onFitSong?: () => void;
+  appMode: 'practice' | 'tuner';
+  onSetAppMode: (mode: 'practice' | 'tuner') => void;
+
+  keepTakes: boolean;
+  onToggleKeepTakes: () => void;
+  takeCount: number;
+  onClearTakes: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -59,10 +62,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSelectNoteLabelMode,
   enharmonic,
   onToggleEnharmonic,
-  zoom,
-  onZoomIn,
-  onZoomOut,
-  onFitSong
+  appMode,
+  onSetAppMode,
+  keepTakes,
+  onToggleKeepTakes,
+  takeCount,
+  onClearTakes
 }) => {
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -115,6 +120,32 @@ export const TopBar: React.FC<TopBarProps> = ({
             </select>
           )}
         </div>
+
+        {/* Sung takes */}
+        <div className="flex items-center gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800 text-xs">
+          <label
+            className="flex items-center gap-1.5 px-1.5 cursor-pointer text-slate-300 select-none"
+            title="On: every pass keeps its own colored line. Off: each new pass replaces the previous one."
+          >
+            <input
+              type="checkbox"
+              checked={keepTakes}
+              onChange={onToggleKeepTakes}
+              className="accent-rose-500 cursor-pointer"
+            />
+            <Layers className="w-3.5 h-3.5 text-slate-400" />
+            <span>Keep takes</span>
+            {takeCount > 0 && <span className="font-mono text-[10px] text-rose-300">({takeCount})</span>}
+          </label>
+          <button
+            onClick={onClearTakes}
+            disabled={takeCount === 0}
+            className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-rose-400 disabled:opacity-30 disabled:hover:bg-transparent transition"
+            title="Clear sung pitch lines (C)"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Center: Playback Transport Controls */}
@@ -142,8 +173,26 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </div>
 
-      {/* Right: Display Preferences, Zoom & Theme */}
+      {/* Right: Mode, Display Preferences & Theme */}
       <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-lg border border-slate-800 text-xs">
+          <button
+            onClick={() => onSetAppMode('practice')}
+            className={`px-2 py-1 rounded transition ${appMode === 'practice' ? 'bg-cyan-900 text-cyan-200 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            title="Sing along with the uploaded tracks"
+          >
+            Practice
+          </button>
+          <button
+            onClick={() => onSetAppMode('tuner')}
+            className={`flex items-center gap-1 px-2 py-1 rounded transition ${appMode === 'tuner' ? 'bg-cyan-900 text-cyan-200 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            title="Tuner: shows the nearest note and how far you are from it - no reference track needed"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            Tuner
+          </button>
+        </div>
+
         {/* Note Grid Label Mode */}
         <div className="flex items-center gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800 text-xs">
           <span className="text-slate-400 px-1 text-[11px] font-medium">Labels:</span>
@@ -198,33 +247,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         </div>
 
-        {/* Zoom & Fit */}
-        <div className="flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
-          <button
-            onClick={onZoomOut}
-            className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
-            title="Zoom Out (-)"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <span className="text-[11px] font-mono text-slate-400 px-1">{zoom.toFixed(1)}x</span>
-          <button
-            onClick={onZoomIn}
-            className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
-            title="Zoom In (+)"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          {onFitSong && (
-            <button
-              onClick={onFitSong}
-              className="p-1 ml-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400 transition"
-              title="Fit Entire Song [↔]"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
       </div>
     </header>
   );

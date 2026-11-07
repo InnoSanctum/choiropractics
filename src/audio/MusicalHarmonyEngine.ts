@@ -1,15 +1,16 @@
 /**
  * Musical Harmony Engine & Key/Mode Detector
- * 
+ *
  * Provides:
- * 1. Diatonic mode-dependent interval harmonization (smart 3rds, 5ths, 6ths, 9ths).
- * 2. Chromatic interval harmonization (fixed semitones: +12, -12, +7, etc.).
+ * 1. Fixed (chromatic) intervals: always the same number of semitones (octave, P5, M3, ...).
+ * 2. Smart (diatonic) intervals: a number of scale steps inside the selected key & mode, so a
+ *    "3rd above" is major or minor depending on where the note sits in the scale.
  * 3. Krumhansl-Schmuckler Key & Mode Detection from pitch trajectories.
  */
 
 import { PitchFrame, PraatPitchEngine } from './PraatPitchEngine';
 
-export type MusicalMode = 
+export type MusicalMode =
   | 'major'           // Ionian: 0, 2, 4, 5, 7, 9, 11
   | 'minor'           // Aeolian / Natural Minor: 0, 2, 3, 5, 7, 8, 10
   | 'dorian'          // Dorian: 0, 2, 3, 5, 7, 9, 10
@@ -21,28 +22,54 @@ export type IntervalType =
   | 'chromatic'       // Fixed semitone offset
   | 'diatonic';       // Mode-dependent scale-degree offset
 
+export type PresetGroup = 'unison' | 'fixed' | 'smart';
+
 export interface HarmonyPreset {
   id: string;
   name: string;
+  group: PresetGroup;
   type: IntervalType;
   semitones: number;       // For chromatic (e.g. +12, -12, +7)
-  scaleDegrees: number;    // For diatonic (e.g. +2 for 3rd above, -2 for 3rd below)
+  scaleDegrees: number;    // For diatonic: scale steps (+2 = 3rd above, -2 = 3rd below)
   description: string;
 }
 
+const fixed = (id: string, name: string, semitones: number, description: string): HarmonyPreset =>
+  ({ id, name, group: 'fixed', type: 'chromatic', semitones, scaleDegrees: 0, description });
+const smart = (id: string, name: string, scaleDegrees: number, description: string): HarmonyPreset =>
+  ({ id, name, group: 'smart', type: 'diatonic', semitones: 0, scaleDegrees, description });
+
 export const STANDARD_HARMONY_PRESETS: HarmonyPreset[] = [
-  { id: 'octave_up', name: 'Octave Higher (+12 st)', type: 'chromatic', semitones: 12, scaleDegrees: 7, description: 'Double an octave above' },
-  { id: 'octave_down', name: 'Octave Lower (-12 st)', type: 'chromatic', semitones: -12, scaleDegrees: -7, description: 'Double an octave below' },
-  { id: 'diatonic_3rd_up', name: 'Diatonic 3rd Above (Smart)', type: 'diatonic', semitones: 4, scaleDegrees: 2, description: 'Dynamically selects Major or Minor 3rd based on mode' },
-  { id: 'diatonic_3rd_down', name: 'Diatonic 3rd Below (Smart)', type: 'diatonic', semitones: -4, scaleDegrees: -2, description: 'Dynamically selects Major or Minor 3rd below based on mode' },
-  { id: 'perfect_5th_up', name: 'Perfect 5th Higher (+7 st)', type: 'chromatic', semitones: 7, scaleDegrees: 4, description: 'Power harmony a 5th above' },
-  { id: 'perfect_5th_down', name: 'Perfect 5th Lower (-7 st)', type: 'chromatic', semitones: -7, scaleDegrees: -4, description: 'Foundational 5th below' },
-  { id: 'diatonic_6th_up', name: 'Diatonic 6th Above (Smart)', type: 'diatonic', semitones: 9, scaleDegrees: 5, description: 'Lush vocal choir 6th above' },
-  { id: 'custom_chromatic', name: 'Custom Interval', type: 'chromatic', semitones: 0, scaleDegrees: 0, description: 'Manual semitone offset' }
+  { id: 'unison', name: 'Unison (sing the melody)', group: 'unison', type: 'chromatic', semitones: 0, scaleDegrees: 0, description: 'Match the reference track exactly' },
+
+  // Smart, key- and mode-dependent
+  smart('diatonic_3rd_up', '3rd above', 2, 'Major or minor 3rd above, whichever fits the key'),
+  smart('diatonic_3rd_down', '3rd below', -2, 'Major or minor 3rd below, whichever fits the key'),
+  smart('diatonic_4th_up', '4th above', 3, 'Perfect (or augmented on the 4th degree) 4th above, in key'),
+  smart('diatonic_4th_down', '4th below', -3, '4th below, in key'),
+  smart('diatonic_5th_up', '5th above', 4, 'Perfect (or diminished on the 7th degree) 5th above, in key'),
+  smart('diatonic_5th_down', '5th below', -4, '5th below, in key'),
+  smart('diatonic_6th_up', '6th above', 5, 'Major or minor 6th above, in key'),
+  smart('diatonic_6th_down', '6th below', -5, 'Major or minor 6th below, in key'),
+
+  // Fixed, chromatic
+  fixed('octave_up', 'Octave above (+12)', 12, 'One octave higher'),
+  fixed('octave_down', 'Octave below (−12)', -12, 'One octave lower'),
+  fixed('perfect_5th_up', 'Perfect 5th above (+7)', 7, 'Always 7 semitones higher'),
+  fixed('perfect_5th_down', 'Perfect 5th below (−7)', -7, 'Always 7 semitones lower'),
+  fixed('perfect_4th_up', 'Perfect 4th above (+5)', 5, 'Always 5 semitones higher'),
+  fixed('perfect_4th_down', 'Perfect 4th below (−5)', -5, 'Always 5 semitones lower'),
+  fixed('major_3rd_up', 'Major 3rd above (+4)', 4, 'Always 4 semitones higher'),
+  fixed('major_3rd_down', 'Major 3rd below (−4)', -4, 'Always 4 semitones lower'),
+  fixed('minor_3rd_up', 'Minor 3rd above (+3)', 3, 'Always 3 semitones higher'),
+  fixed('minor_3rd_down', 'Minor 3rd below (−3)', -3, 'Always 3 semitones lower'),
+  fixed('major_6th_up', 'Major 6th above (+9)', 9, 'Always 9 semitones higher'),
+  fixed('minor_6th_up', 'Minor 6th above (+8)', 8, 'Always 8 semitones higher'),
+  fixed('custom_chromatic', 'Custom (± semitones)', 0, 'Any fixed number of semitones')
 ];
 
 // Scale degree intervals relative to root
-const MODE_SCALE_STEPS: Record<MusicalMode, number[]> = {
+export const MODE_SCALE_STEPS: Record<MusicalMode, number[]> = {
   major:          [0, 2, 4, 5, 7, 9, 11],
   minor:          [0, 2, 3, 5, 7, 8, 10],
   dorian:         [0, 2, 3, 5, 7, 9, 10],
@@ -50,6 +77,42 @@ const MODE_SCALE_STEPS: Record<MusicalMode, number[]> = {
   phrygian:       [0, 1, 3, 5, 7, 8, 10],
   harmonic_minor: [0, 2, 3, 5, 7, 8, 11]
 };
+
+const mod = (n: number, m: number) => ((n % m) + m) % m;
+
+/**
+ * Transposes a MIDI pitch by `steps` scale degrees within the key (root pitch class + mode).
+ * Notes outside the scale keep their chromatic alteration relative to the nearest scale note
+ * (e.g. F# in C major, 3rd above -> A#). Microtonal deviation (cents) is preserved.
+ */
+export function transposeDiatonic(midi: number, rootIndex: number, mode: MusicalMode, steps: number): number {
+  const scale = MODE_SCALE_STEPS[mode];
+  const n = Math.round(midi);
+  const cents = midi - n;
+  const pc = mod(n - rootIndex, 12);
+
+  // Nearest scale degree using circular (octave-wrapping) distance.
+  // Ties resolve to the lower note, i.e. the out-of-scale note is read as a raised degree.
+  let degree = 0;
+  let alteration = 0;
+  let bestDist = Infinity;
+  for (let d = 0; d < scale.length; d++) {
+    let diff = mod(pc - scale[d], 12);   // 0..11
+    if (diff > 6) diff -= 12;              // -5..6
+    const dist = Math.abs(diff);
+    if (dist < bestDist || (dist === bestDist && diff > 0)) {
+      bestDist = dist;
+      degree = d;
+      alteration = diff;
+    }
+  }
+
+  const tonic = n - alteration - scale[degree]; // MIDI of the tonic below/at this scale note
+  const target = degree + steps;
+  const octave = Math.floor(target / 7);
+  const targetDegree = mod(target, 7);
+  return tonic + scale[targetDegree] + 12 * octave + alteration + cents;
+}
 
 // Krumhansl-Schmuckler Key Profiles for key detection
 // Weights for pitch classes [0..11] relative to tonic
@@ -69,7 +132,7 @@ export interface DetectedKeyResult {
 export class MusicalHarmonyEngine {
   public rootIndex: number = 0;          // 0 = C
   public activeMode: MusicalMode = 'major';
-  public activePreset: HarmonyPreset = STANDARD_HARMONY_PRESETS[2]; // Default to Diatonic 3rd
+  public activePreset: HarmonyPreset = STANDARD_HARMONY_PRESETS[0]; // Unison
   public customSemitones: number = 0;
 
   constructor(rootIndex: number = 0, mode: MusicalMode = 'major') {
@@ -77,57 +140,29 @@ export class MusicalHarmonyEngine {
     this.activeMode = mode;
   }
 
+  /** Transposes a MIDI pitch by the active interval. */
+  public transposeMidi(refMidi: number): number {
+    const preset = this.activePreset;
+    if (preset.type === 'chromatic') {
+      const semitones = preset.id === 'custom_chromatic' ? this.customSemitones : preset.semitones;
+      return refMidi + semitones;
+    }
+    return transposeDiatonic(refMidi, this.rootIndex, this.activeMode, preset.scaleDegrees);
+  }
+
   /**
-   * Calculates the target pitch (in Hz and MIDI) for a given reference pitch frame,
-   * applying either chromatic interval or smart diatonic mode-dependent interval.
+   * Calculates the target pitch (in Hz and MIDI) for a given reference pitch,
+   * applying either the fixed chromatic interval or the smart in-key interval.
    */
   public computeTargetPitch(refMidi: number, refHz: number): { targetMidi: number, targetHz: number, semitoneDiff: number } {
     if (refHz <= 0 || refMidi <= 0) {
       return { targetMidi: 0, targetHz: 0, semitoneDiff: 0 };
     }
-
-    if (this.activePreset.type === 'chromatic') {
-      const semitones = this.activePreset.id === 'custom_chromatic' 
-        ? this.customSemitones 
-        : this.activePreset.semitones;
-      const targetMidi = refMidi + semitones;
-      const targetHz = PraatPitchEngine.midiToFrequency(targetMidi);
-      return { targetMidi, targetHz, semitoneDiff: semitones };
-    }
-
-    // Diatonic mode-dependent interval logic
-    const scale = MODE_SCALE_STEPS[this.activeMode];
-    const pitchClass = ((Math.round(refMidi) - this.rootIndex) % 12 + 12) % 12;
-
-    // Find closest scale degree
-    let closestDegree = 0;
-    let minDistance = 999;
-    for (let i = 0; i < scale.length; i++) {
-      const dist = Math.abs(pitchClass - scale[i]);
-      if (dist < minDistance) {
-        minDistance = dist;
-        closestDegree = i;
-      }
-    }
-
-    // Shift by requested scale degrees (e.g. +2 for a diatonic third)
-    const targetDegree = closestDegree + this.activePreset.scaleDegrees;
-    const octaveShift = Math.floor(targetDegree / 7);
-    const normalizedTargetDegree = ((targetDegree % 7) + 7) % 7;
-
-    const baseSemitones = scale[normalizedTargetDegree] + (octaveShift * 12);
-    const currentSemitones = scale[closestDegree];
-    const diatonicSemitoneDiff = baseSemitones - currentSemitones;
-
-    // Add cents microtonal fraction from refMidi
-    const centFraction = refMidi - Math.round(refMidi);
-    const targetMidi = Math.round(refMidi) + diatonicSemitoneDiff + centFraction;
-    const targetHz = PraatPitchEngine.midiToFrequency(targetMidi);
-
+    const targetMidi = this.transposeMidi(refMidi);
     return {
       targetMidi,
-      targetHz,
-      semitoneDiff: diatonicSemitoneDiff
+      targetHz: PraatPitchEngine.midiToFrequency(targetMidi),
+      semitoneDiff: Math.round(targetMidi - refMidi)
     };
   }
 

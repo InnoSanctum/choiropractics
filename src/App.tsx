@@ -5,24 +5,33 @@ import { CoachingHUD } from './components/CoachingHUD';
 import { HarmonyPanel } from './components/HarmonyPanel';
 import { VisualizerCanvas } from './components/VisualizerCanvas';
 import { TimelineScrollbar } from './components/TimelineScrollbar';
+import { PracticePanel, CountInMode } from './components/PracticePanel';
 
 import { MultiTrackMixer, AudioTrackState, DEFAULT_TRACK_COLORS } from './audio/MultiTrackMixer';
 import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
 import { BatchPitchExtractor, PITCH_ANALYSIS_VERSION } from './audio/BatchPitchExtractor';
 import { PitchComparator, CoachingFeedback } from './audio/PitchComparator';
-import { 
-  MusicalHarmonyEngine, 
-  MusicalMode, 
-  HarmonyPreset, 
+import { detectTempo } from './audio/TempoDetector';
+import { filterLatestFrames } from './audio/LivePitchFilter';
+import {
+  MusicalHarmonyEngine,
+  MusicalMode,
+  HarmonyPreset,
   STANDARD_HARMONY_PRESETS,
-  DetectedKeyResult 
+  DetectedKeyResult
 } from './audio/MusicalHarmonyEngine';
 import { ThemeId, THEMES, NoteLabelMode } from './visualizer/ThemeManager';
+import { NoteGridRenderer, MicTake, HarmonyNote } from './visualizer/NoteGridRenderer';
 import { db } from './storage/db';
 
 // Timeline viewport limits
 const BASE_VISIBLE = 8.0;  // Seconds visible at zoom 1.0
 const MIN_VISIBLE = 1.0;   // Most zoomed-in: 1 second across the screen
+
+// Distinct colors for successive sung takes (chosen to differ from the track colors)
+const TAKE_COLORS = ['#f43f5e', '#22d3ee', '#a3e635', '#c084fc', '#f472b6', '#2dd4bf', '#e879f9', '#facc15'];
+const MAX_TAKES = 12;
+const MIC_ANALYSIS_DELAY = 1024 / 44100; // Half the mic analysis buffer (approx.)
 
 /** Clamps a viewport so it stays inside the song. With no audio loaded, only the start is clamped. */
 function clampView(offset: number, visible: number, duration: number) {
@@ -32,6 +41,13 @@ function clampView(offset: number, visible: number, duration: number) {
   const o = Math.max(0, Math.min(maxOffset, offset));
   return { offset: o, visible: v };
 }
+
+const NOTE_NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+const midiName = (midi: number, enharmonic: 'sharp' | 'flat') =>
+  `${(enharmonic === 'flat' ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP)[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
+
+type AppMode = 'practice' | 'tuner';
 
 export function App() {
   // Mixer & Audio Engine instances
@@ -57,6 +73,13 @@ export function App() {
       duration: 0
     }))
   );
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+
+  // App mode: practice with tracks, or free tuner
+  const [appMode, setAppMode] = useState<AppMode>('practice');
+  const appModeRef = useRef(appMode);
+  appModeRef.current = appMode;
 
   // Playback & Timeline State
   const [isPlaying, setIsPlaying] = useState(false);
@@ -66,9 +89,8 @@ export function App() {
   const [autoFollow, setAutoFollow] = useState(true);
   const timeOffset = view.offset;
   const visibleDuration = view.visible;
-  const zoom = BASE_VISIBLE / view.visible;
 
-  // Refs for callbacks registered once (playback tick, keyboard)
+  // Refs for callbacks registered once (playback tick, keyboard, mic)
   const viewRef = useRef(view);
   viewRef.current = view;
   const autoFollowRef = useRef(autoFollow);
@@ -77,12 +99,45 @@ export function App() {
   const currentTimeRef = useRef(0);
   currentTimeRef.current = currentTime;
 
+  // Playback speed (pitch preserved)
+  const [speed, setSpeed] = useState(1);
+  const [speedProgress, setSpeedProgress] = useState<number | null>(null);
+
+  // Metronome & count-in
+  const [metronomeOn, setMetronomeOn] = useState(false);
+  const [bpm, setBpm] = useState(120);
+  const [beatsPerBar, setBeatsPerBar] = useState(4);
+  const [firstBeat, setFirstBeat] = useState(0);
+  const [tempoStatus, setTempoStatus] = useState<string | null>(null);
+  const [countInMode, setCountInMode] = useState<CountInMode>('off');
+  const [countInCustomBeats, setCountInCustomBeats] = useState(4);
+  const [countInLeft, setCountInLeft] = useState(0);
+  const tapTimesRef = useRef<number[]>([]);
+
   // Microphone & Real-time Pitch State
   const [isMicActive, setIsMicActive] = useState(false);
   const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('default');
-  const [micHistory, setMicHistory] = useState<PitchFrame[]>([]);
-  const [latestMicFrame, setLatestMicFrame] = useState<PitchFrame | null>(null);
+
+  // Sung takes (mutable for performance; `takesVersion` triggers re-render when the list changes)
+  const takesRef = useRef<MicTake[]>([]);
+  const [, setTakesVersion] = useState(0);
+  const [keepTakes, setKeepTakes] = useState(true);
+  const keepTakesRef = useRef(keepTakes);
+  keepTakesRef.current = keepTakes;
+  const takeCounterRef = useRef(0);
+  const forceNewTakeRef = useRef(true);
+
+  // Tuner
+  const [tunerClockStart, setTunerClockStart] = useState<number | null>(null);
+  const tunerClockStartRef = useRef<number | null>(null);
+  tunerClockStartRef.current = tunerClockStart;
+  const tunerTakeRef = useRef<MicTake>({ id: -1, color: '#f43f5e', frames: [] });
+  const [referenceA4, setReferenceA4] = useState(440);
+  const referenceA4Ref = useRef(referenceA4);
+  referenceA4Ref.current = referenceA4;
+  const [tunerRange, setTunerRange] = useState({ min: 48, max: 72 });
+  const [tunerNote, setTunerNote] = useState<number | null>(null);
 
   // Filter & Vocal Preset for Full-Band / Chords
   const [enableBandpass, setEnableBandpass] = useState(true);
@@ -92,13 +147,20 @@ export function App() {
   const [theme, setTheme] = useState<ThemeId>('dark_studio');
   const [noteLabelMode, setNoteLabelMode] = useState<NoteLabelMode>('cs_only');
   const [enharmonic, setEnharmonic] = useState<'sharp' | 'flat'>('sharp');
+  const enharmonicRef = useRef(enharmonic);
+  enharmonicRef.current = enharmonic;
 
   // Harmony & Interval State
-  const [activeHarmonyPreset, setActiveHarmonyPreset] = useState<HarmonyPreset>(STANDARD_HARMONY_PRESETS[2]); // Diatonic 3rd
+  const [activeHarmonyPreset, setActiveHarmonyPreset] = useState<HarmonyPreset>(STANDARD_HARMONY_PRESETS[0]); // Unison
   const [rootIndex, setRootIndex] = useState(0); // 0 = C
   const [activeMode, setActiveMode] = useState<MusicalMode>('major');
   const [customSemitones, setCustomSemitones] = useState(0);
   const [detectedKey, setDetectedKey] = useState<DetectedKeyResult | null>(null);
+  const keyTouchedRef = useRef(false); // user picked a key manually -> don't auto-apply detection
+  // Octave-free scoring: singing the target in any octave counts (e.g. men singing a melody an octave down)
+  const [anyOctave, setAnyOctave] = useState(false);
+  const anyOctaveRef = useRef(anyOctave);
+  anyOctaveRef.current = anyOctave;
 
   // Pitch Coaching Feedback
   const [coachingFeedback, setCoachingFeedback] = useState<CoachingFeedback>({
@@ -112,10 +174,142 @@ export function App() {
     micHz: 0
   });
 
+  // Keep the harmony engine in sync with the UI state
+  useEffect(() => {
+    const eng = harmonyEngineRef.current;
+    eng.activePreset = activeHarmonyPreset;
+    eng.rootIndex = rootIndex;
+    eng.activeMode = activeMode;
+    eng.customSemitones = customSemitones;
+  }, [activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
+
+  // Auto-apply the detected key unless the user chose one manually
+  useEffect(() => {
+    if (detectedKey && !keyTouchedRef.current) {
+      setRootIndex(detectedKey.rootIndex);
+      setActiveMode(detectedKey.mode);
+    }
+  }, [detectedKey]);
+
+  // Current Main reference track
+  const mainTrack = useMemo(() => {
+    return tracks.find(t => t.isMain && t.audioBuffer) || null;
+  }, [tracks]);
+  const mainTrackRef = useRef(mainTrack);
+  mainTrackRef.current = mainTrack;
+
+  /** Target pitch (reference transposed by the active interval) at a song time. */
+  const getTargetAt = useCallback((time: number) => {
+    const track = mainTrackRef.current;
+    const none = { targetMidi: 0, targetHz: 0, targetNoteName: '—' };
+    if (!track || track.pitchFrames.length === 0) return none;
+
+    const frames = track.pitchFrames;
+    let low = 0;
+    let high = frames.length - 1;
+    let bestIdx = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (frames[mid].timestamp <= time) {
+        bestIdx = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const frame = frames[bestIdx];
+    if (!frame || !frame.voiced || frame.frequency <= 0 || Math.abs(frame.timestamp - time) > 0.05) return none;
+
+    const harmonized = harmonyEngineRef.current.computeTargetPitch(frame.exactMidi, frame.frequency);
+    return {
+      targetMidi: harmonized.targetMidi,
+      targetHz: harmonized.targetHz,
+      targetNoteName: PraatPitchEngine.frequencyToNote(harmonized.targetHz, enharmonicRef.current).noteName
+    };
+  }, []);
+
+  // ---- Sung takes ----
+  const startNewTake = useCallback(() => {
+    const n = takeCounterRef.current++;
+    const color = keepTakesRef.current ? TAKE_COLORS[n % TAKE_COLORS.length] : TAKE_COLORS[0];
+    const kept = keepTakesRef.current ? takesRef.current : [];
+    const next = [...kept, { id: n, color, frames: [] as PitchFrame[] }];
+    takesRef.current = next.slice(-MAX_TAKES);
+    forceNewTakeRef.current = false;
+    setTakesVersion(v => v + 1);
+    return takesRef.current[takesRef.current.length - 1];
+  }, []);
+
+  const recordToTake = useCallback((frame: PitchFrame) => {
+    const takes = takesRef.current;
+    let take = takes[takes.length - 1];
+    const last = take?.frames[take.frames.length - 1];
+    // Continue the take only while song time keeps moving forward without big jumps
+    const continuous = take && (!last || (frame.timestamp >= last.timestamp - 0.05 && frame.timestamp - last.timestamp < 0.5));
+    if (!take || forceNewTakeRef.current || !continuous) {
+      take = startNewTake();
+    }
+    take.frames.push(frame);
+    filterLatestFrames(take.frames);
+  }, [startNewTake]);
+
+  const clearTakes = useCallback(() => {
+    takesRef.current = [];
+    takeCounterRef.current = 0;
+    tunerTakeRef.current.frames.length = 0;
+    forceNewTakeRef.current = true;
+    comparatorRef.current.resetScore();
+    setTakesVersion(v => v + 1);
+  }, []);
+
+  // ---- Microphone frames (handler kept in a ref so it always sees the latest state) ----
+  const micHandlerRef = useRef<(frame: PitchFrame) => void>(() => {});
+  micHandlerRef.current = (frame: PitchFrame) => {
+    if (appModeRef.current === 'tuner') {
+      const start = tunerClockStartRef.current ?? performance.now();
+      const t = (performance.now() - start) / 1000 - MIC_ANALYSIS_DELAY;
+      const take = tunerTakeRef.current;
+      take.frames.push({ ...frame, timestamp: t });
+      filterLatestFrames(take.frames);
+      if (take.frames.length > 4000) take.frames.splice(0, 1500);
+
+      if (!frame.voiced || frame.frequency <= 0) {
+        setCoachingFeedback(comparatorRef.current.compare(frame, 0, 0, '—'));
+        return;
+      }
+      // Nearest equal-tempered note for the calibrated A4
+      const calOffset = 12 * Math.log2(referenceA4Ref.current / 440);
+      const nearest = Math.round(frame.exactMidi - calOffset);
+      const targetMidi = nearest + calOffset;
+      const name = midiName(nearest, enharmonicRef.current);
+      const fb = comparatorRef.current.compare(frame, targetMidi, PraatPitchEngine.midiToFrequency(targetMidi), name);
+      setCoachingFeedback({ ...fb, micNote: name });
+      setTunerNote(nearest);
+      setTunerRange(r => (nearest < r.min + 3 || nearest > r.max - 3) ? { min: nearest - 12, max: nearest + 12 } : r);
+      return;
+    }
+
+    const mixer = mixerRef.current;
+    const running = !!mixer && mixer.isRunning();
+    if (running) recordToTake(frame);
+    let target = getTargetAt(running ? frame.timestamp : currentTimeRef.current);
+    if (anyOctaveRef.current && frame.voiced && frame.exactMidi > 0 && target.targetMidi > 0) {
+      // Move the target by whole octaves to the octave closest to what is being sung
+      const octaves = Math.round((frame.exactMidi - target.targetMidi) / 12);
+      if (octaves !== 0) {
+        const targetMidi = target.targetMidi + 12 * octaves;
+        const targetHz = PraatPitchEngine.midiToFrequency(targetMidi);
+        target = { targetMidi, targetHz, targetNoteName: PraatPitchEngine.frequencyToNote(targetHz, enharmonicRef.current).noteName };
+      }
+    }
+    setCoachingFeedback(comparatorRef.current.compare(frame, target.targetMidi, target.targetHz, target.targetNoteName));
+  };
+
   // Initialize MultiTrackMixer
   useEffect(() => {
     const mixer = new MultiTrackMixer();
     mixerRef.current = mixer;
+    mixer.onMicFrame = (frame) => micHandlerRef.current(frame);
 
     // Load available audio input devices
     MultiTrackMixer.getAvailableInputDevices().then(devices => {
@@ -128,6 +322,7 @@ export function App() {
     // Playback time tick
     mixer.onPlaybackTick = (time) => {
       setCurrentTime(time);
+      setCountInLeft(mixer.getCountInBeatsRemaining());
       if (!autoFollowRef.current) return;
       // Page the viewport forward when the playhead nears the right edge (or left the view)
       const { offset, visible } = viewRef.current;
@@ -138,6 +333,8 @@ export function App() {
 
     mixer.onPlaybackEnded = () => {
       setIsPlaying(false);
+      setCountInLeft(0);
+      forceNewTakeRef.current = true;
     };
 
     // Load persisted tracks from IndexedDB
@@ -199,6 +396,19 @@ export function App() {
     }
   }, [tracks]);
 
+  // Metronome / count-in settings -> mixer
+  const countInBeats = countInMode === 'off' ? 0
+    : countInMode === '1bar' ? beatsPerBar
+    : countInMode === '2bars' ? beatsPerBar * 2
+    : countInCustomBeats;
+  useEffect(() => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    mixer.metronome = { ...mixer.metronome, enabled: metronomeOn, bpm, beatsPerBar, firstBeat };
+    mixer.countInBeats = countInBeats;
+    mixer.resetMetronomeSchedule();
+  }, [metronomeOn, bpm, beatsPerBar, firstBeat, countInBeats]);
+
   // Compute maximum audio duration
   const maxDuration = useMemo(() => {
     return Math.max(0, ...tracks.map(t => t.duration));
@@ -246,8 +456,167 @@ export function App() {
     setView(clampView(0, Math.max(durationRef.current, BASE_VISIBLE), durationRef.current));
   }, []);
 
-  // Keyboard shortcuts: +/- zoom, 0 fit, arrows scroll, Home/End, F follow, Space play/pause
+  // ---- Microphone ----
+  const startMic = async () => {
+    const mixer = mixerRef.current;
+    if (!mixer) return false;
+    const success = await mixer.startMicrophone(selectedDeviceId);
+    setIsMicActive(success);
+    return success;
+  };
+
+  const handleToggleMic = async () => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    if (isMicActive) {
+      mixer.stopMicrophone();
+      setIsMicActive(false);
+      comparatorRef.current.resetScore();
+    } else {
+      await startMic();
+    }
+  };
+
+  // ---- Transport ----
+  const loadedBuffers = () => tracksRef.current.filter(t => t.audioBuffer).map(t => t.audioBuffer!);
+
+  /** Makes sure pitch-preserved audio exists for the current speed (shows progress). */
+  const ensureSpeedPrepared = async (rate: number) => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    const buffers = loadedBuffers();
+    if (!mixer.isRatePrepared(buffers, rate)) {
+      setSpeedProgress(0);
+      await mixer.prepareRate(buffers, rate, setSpeedProgress);
+      setSpeedProgress(null);
+    }
+  };
+
+  const handlePlayPause = async () => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+
+    if (mixer.isPlaying) {
+      mixer.pauseAll();
+      setIsPlaying(false);
+      setCountInLeft(0);
+      return;
+    }
+    if (speedProgress !== null) return; // still preparing
+    await ensureSpeedPrepared(speed);
+    mixer.playbackRate = speed;
+    const start = currentTimeRef.current >= durationRef.current - 0.05 ? 0 : currentTimeRef.current;
+    mixer.playAll(tracksRef.current, start, true);
+    setIsPlaying(mixer.isPlaying);
+    setAutoFollow(true);
+  };
   const playPauseRef = useRef<() => void>(() => {});
+  playPauseRef.current = handlePlayPause;
+
+  // Stop transport
+  const handleStop = () => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    mixer.stopAll();
+    setIsPlaying(false);
+    setCountInLeft(0);
+    setCurrentTime(0);
+    forceNewTakeRef.current = true;
+    setView(v => clampView(0, v.visible, durationRef.current));
+  };
+
+  // Seek timeline
+  const handleSeek = (seekTime: number) => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    setCurrentTime(seekTime);
+    forceNewTakeRef.current = true;
+    if (mixer.isPlaying) {
+      mixer.playAll(tracksRef.current, seekTime);
+    } else {
+      mixer.setPosition(seekTime);
+    }
+  };
+
+  // Speed change: prepare stretched audio, then continue playing at the same position
+  const handleSpeedChange = async (rate: number) => {
+    const mixer = mixerRef.current;
+    if (!mixer || rate === speed) return;
+    setSpeed(rate);
+    const wasPlaying = mixer.isPlaying;
+    const pos = mixer.getCurrentTime();
+    if (wasPlaying) {
+      mixer.pauseAll();
+      setIsPlaying(false);
+    }
+    await ensureSpeedPrepared(rate);
+    mixer.playbackRate = rate;
+    if (wasPlaying) {
+      forceNewTakeRef.current = true;
+      mixer.playAll(tracksRef.current, pos);
+      setIsPlaying(true);
+    }
+  };
+
+  // ---- Tempo ----
+  const handleTap = () => {
+    const mixer = mixerRef.current;
+    const now = performance.now();
+    const taps = tapTimesRef.current.filter(t => now - t < 2500);
+    taps.push(now);
+    tapTimesRef.current = taps.slice(-8);
+    mixer?.clickNow(taps.length === 1);
+    if (taps.length >= 2) {
+      const intervals = taps.slice(1).map((t, i) => t - taps[i]).sort((a, b) => a - b);
+      const median = intervals[Math.floor(intervals.length / 2)];
+      // Taps are in song tempo at the current playback speed
+      const tapped = Math.round((60000 / median) / speed);
+      setBpm(Math.max(30, Math.min(260, tapped)));
+      setTempoStatus(`Tap: ${tapped} BPM (${taps.length})`);
+      // While playing, align the beat grid to the taps
+      if (mixer?.isRunning()) setFirstBeat(mixer.getCurrentTime());
+    } else {
+      setTempoStatus('Tap again…');
+    }
+  };
+
+  const handleDetectTempo = () => {
+    const track = mainTrackRef.current ?? tracksRef.current.find(t => t.audioBuffer) ?? null;
+    if (!track?.audioBuffer) return;
+    const result = detectTempo(track.audioBuffer, track.pitchFrames);
+    if (!result) {
+      setTempoStatus('Could not detect tempo');
+      return;
+    }
+    const rounded = Math.abs(result.bpm - Math.round(result.bpm)) < 0.6 ? Math.round(result.bpm) : result.bpm;
+    setBpm(rounded);
+    setFirstBeat(result.firstBeat);
+    setTempoStatus(`Detected ${rounded} BPM${result.confidence < 0.1 ? ' (uncertain)' : ''}`);
+  };
+
+  // ---- Mode ----
+  const handleSetAppMode = async (mode: AppMode) => {
+    if (mode === appMode) return;
+    const mixer = mixerRef.current;
+    if (mode === 'tuner') {
+      if (mixer?.isPlaying) {
+        mixer.pauseAll();
+        setIsPlaying(false);
+      }
+      tunerTakeRef.current = { id: -1, color: TAKE_COLORS[0], frames: [] };
+      setTunerClockStart(performance.now());
+      setTunerNote(null);
+      comparatorRef.current.resetScore();
+      setAppMode('tuner');
+      if (!isMicActive) await startMic();
+    } else {
+      setTunerClockStart(null);
+      comparatorRef.current.resetScore();
+      setAppMode('practice');
+    }
+  };
+
+  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -282,6 +651,18 @@ export function App() {
         case 'F':
           setAutoFollow(a => !a);
           break;
+        case 'm':
+        case 'M':
+          setMetronomeOn(m => !m);
+          break;
+        case 't':
+        case 'T':
+          tapRef.current();
+          break;
+        case 'c':
+        case 'C':
+          clearTakes();
+          break;
         case ' ':
           if (target && target.tagName === 'BUTTON') return; // let the focused button handle it
           playPauseRef.current();
@@ -293,130 +674,15 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [zoomButton, fitSong, scrollBy, scrollTo]);
+  }, [zoomButton, fitSong, scrollBy, scrollTo, clearTakes]);
+  const tapRef = useRef(handleTap);
+  tapRef.current = handleTap;
 
-  // Current Main reference track
-  const mainTrack = useMemo(() => {
-    return tracks.find(t => t.isMain && t.audioBuffer) || null;
-  }, [tracks]);
-
-  // Compute current target pitch at currentTime
-  const currentTargetPitch = useMemo(() => {
-    if (!mainTrack || mainTrack.pitchFrames.length === 0) {
-      return { targetMidi: 0, targetHz: 0, targetNoteName: '—' };
-    }
-
-    // Binary search for frame at currentTime
-    const frames = mainTrack.pitchFrames;
-    let low = 0;
-    let high = frames.length - 1;
-    let bestIdx = 0;
-
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      if (frames[mid].timestamp < currentTime) {
-        bestIdx = mid;
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-
-    const frame = frames[bestIdx];
-    if (!frame || !frame.voiced || frame.frequency <= 0) {
-      return { targetMidi: 0, targetHz: 0, targetNoteName: '—' };
-    }
-
-    // Apply Diatonic / Chromatic interval transform from HarmonyEngine
-    const harmonized = harmonyEngineRef.current.computeTargetPitch(frame.exactMidi, frame.frequency);
-    const targetNoteInfo = PraatPitchEngine.frequencyToNote(harmonized.targetHz, enharmonic);
-
-    return {
-      targetMidi: harmonized.targetMidi,
-      targetHz: harmonized.targetHz,
-      targetNoteName: targetNoteInfo.noteName
-    };
-  }, [mainTrack, currentTime, enharmonic, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
-
-  // Handle incoming microphone frame
-  const handleMicFrame = useCallback((frame: PitchFrame) => {
-    setLatestMicFrame(frame);
-
-    // Keep rolling 12 seconds in mic history
-    setMicHistory(prev => {
-      const updated = [...prev, frame];
-      const cutoff = frame.timestamp - 12.0;
-      return updated.filter(f => f.timestamp >= cutoff);
-    });
-
-    // Run real-time comparison against current target pitch
-    const comparison = comparatorRef.current.compare(
-      frame,
-      currentTargetPitch.targetMidi,
-      currentTargetPitch.targetHz,
-      currentTargetPitch.targetNoteName
-    );
-    setCoachingFeedback(comparison);
-  }, [currentTargetPitch]);
-
-  // Toggle Microphone
-  const handleToggleMic = async () => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-
-    if (isMicActive) {
-      mixer.stopMicrophone();
-      setIsMicActive(false);
-      comparatorRef.current.resetScore();
-    } else {
-      mixer.onMicFrame = handleMicFrame;
-      const success = await mixer.startMicrophone(selectedDeviceId);
-      setIsMicActive(success);
-    }
-  };
-
-  // Play / Pause transport
-  const handlePlayPause = () => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-
-    if (isPlaying) {
-      mixer.pauseAll();
-      setIsPlaying(false);
-    } else {
-      mixer.playAll(tracks, currentTime);
-      setIsPlaying(true);
-      setAutoFollow(true);
-    }
-  };
-  playPauseRef.current = handlePlayPause;
-
-  // Stop transport
-  const handleStop = () => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-    mixer.stopAll();
-    setIsPlaying(false);
-    setCurrentTime(0);
-    setView(v => clampView(0, v.visible, durationRef.current));
-  };
-
-  // Seek timeline
-  const handleSeek = (seekTime: number) => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-    setCurrentTime(seekTime);
-    if (isPlaying) {
-      mixer.playAll(tracks, seekTime);
-    }
-  };
-
-  // File Upload & Batch Pitch Extraction
+  // ---- Track management ----
   const handleUploadFile = async (index: number, file: File) => {
     const mixer = mixerRef.current;
     if (!mixer) return;
 
-    // Set analyzing state
     setTracks(prev => prev.map(t => t.index === index ? { ...t, isAnalyzing: true, analysisProgress: 0, name: file.name } : t));
 
     try {
@@ -431,7 +697,6 @@ export function App() {
         }
       });
 
-      // Update track state
       setTracks(prev => prev.map(t => {
         if (t.index === index) {
           return {
@@ -447,14 +712,12 @@ export function App() {
         return t;
       }));
 
-      // Automatically run Key & Mode detection if this is track 1 or main track
       const keyResult = MusicalHarmonyEngine.detectKeyAndMode(pitchFrames);
       if (keyResult && keyResult.confidence > 0.45) {
         setDetectedKey(keyResult);
       }
 
-      // Persist to IndexedDB
-      const currentTrack = tracks[index];
+      const currentTrack = tracksRef.current[index];
       await db.saveTrack(
         index,
         file.name,
@@ -471,7 +734,6 @@ export function App() {
     }
   };
 
-  // Track Solo / Mute / Volume / Color / Main
   const handleToggleMute = (index: number) => {
     setTracks(prev => prev.map(t => t.index === index ? { ...t, muted: !t.muted } : t));
   };
@@ -509,13 +771,10 @@ export function App() {
     await db.clearTrack(index);
   };
 
-  // Apply Detected Key
   const handleApplyDetectedKey = () => {
     if (detectedKey) {
       setRootIndex(detectedKey.rootIndex);
       setActiveMode(detectedKey.mode);
-      harmonyEngineRef.current.rootIndex = detectedKey.rootIndex;
-      harmonyEngineRef.current.activeMode = detectedKey.mode;
     }
   };
 
@@ -532,11 +791,11 @@ export function App() {
 
     // Synthesize a pleasant vocal-like harmonic melody: C4 -> E4 -> G4 -> A4 -> G4
     const notes = [
-      { midi: 60, dur: 1.2 }, // C4
-      { midi: 64, dur: 1.2 }, // E4
-      { midi: 67, dur: 1.2 }, // G4
-      { midi: 69, dur: 1.2 }, // A4
-      { midi: 67, dur: 1.2 }  // G4
+      { midi: 60, dur: 1.2 },
+      { midi: 64, dur: 1.2 },
+      { midi: 67, dur: 1.2 },
+      { midi: 69, dur: 1.2 },
+      { midi: 67, dur: 1.2 }
     ];
 
     let offset = 0;
@@ -545,20 +804,17 @@ export function App() {
       const samples = Math.floor(note.dur * sampleRate);
       for (let i = 0; i < samples; i++) {
         const t = i / sampleRate;
-        // Vocal timbre: Fundamental + 2nd & 3rd harmonics + gentle vibrato
         const vibrato = 1.0 + 0.005 * Math.sin(2 * Math.PI * 5.5 * t);
         const f = freq * vibrato;
         const wave = 0.5 * Math.sin(2 * Math.PI * f * t) +
                      0.25 * Math.sin(4 * Math.PI * f * t) +
                      0.12 * Math.sin(6 * Math.PI * f * t);
-        // Envelope: attack & release
         const env = Math.min(1.0, i / 800) * Math.min(1.0, (samples - i) / 800);
         data[offset + i] = wave * env * 0.4;
       }
       offset += samples;
     }
 
-    // Extract pitch directly
     const frames = await BatchPitchExtractor.extractPitchFromAudioBuffer(buffer);
 
     setTracks(prev => prev.map(t => {
@@ -584,7 +840,21 @@ export function App() {
     });
   };
 
-  // Note range on the grid: fit to the pitches of the loaded tracks (default A2..F5)
+  // Harmony target notes for the diagram: reference notes transposed by the active interval
+  const harmonyNotes = useMemo<HarmonyNote[]>(() => {
+    if (!mainTrack || activeHarmonyPreset.group === 'unison') return [];
+    const eng = new MusicalHarmonyEngine(rootIndex, activeMode);
+    eng.activePreset = activeHarmonyPreset;
+    eng.customSemitones = customSemitones;
+    if (activeHarmonyPreset.id === 'custom_chromatic' && customSemitones === 0) return [];
+    return NoteGridRenderer.getSegments(mainTrack.pitchFrames).map(s => ({
+      startTime: s.startTime,
+      endTime: s.endTime,
+      midi: eng.transposeMidi(s.nearestMidi)
+    }));
+  }, [mainTrack, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
+
+  // Note range on the grid: fit to the pitches of the loaded tracks and harmony (default A2..F5)
   const { minMidi, maxMidi } = useMemo(() => {
     const pitches: number[] = [];
     for (const t of tracks) {
@@ -597,6 +867,10 @@ export function App() {
     pitches.sort((a, b) => a - b);
     let lo = Math.floor(pitches[Math.floor(pitches.length * 0.01)]) - 3;
     let hi = Math.ceil(pitches[Math.floor(pitches.length * 0.99)]) + 3;
+    for (const n of harmonyNotes) {
+      lo = Math.min(lo, Math.floor(n.midi) - 2);
+      hi = Math.max(hi, Math.ceil(n.midi) + 2);
+    }
     const MIN_SPAN = 20;
     if (hi - lo < MIN_SPAN) {
       const extra = MIN_SPAN - (hi - lo);
@@ -604,13 +878,16 @@ export function App() {
       hi += Math.ceil(extra / 2);
     }
     return { minMidi: lo, maxMidi: hi };
-  }, [tracks]);
+  }, [tracks, harmonyNotes]);
 
   const currentTheme = THEMES[theme];
+  const isTuner = appMode === 'tuner';
+  // The tuner take object is replaced whenever tuner mode starts (tunerClockStart changes)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tunerTakes = useMemo(() => [tunerTakeRef.current], [tunerClockStart]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
-      {/* Top Bar: Playback, Mic Device, Labels, Themes */}
       <TopBar
         isPlaying={isPlaying}
         onPlayPause={handlePlayPause}
@@ -633,72 +910,137 @@ export function App() {
         onSelectNoteLabelMode={setNoteLabelMode}
         enharmonic={enharmonic}
         onToggleEnharmonic={() => setEnharmonic(prev => prev === 'sharp' ? 'flat' : 'sharp')}
-        zoom={zoom}
-        onZoomIn={() => zoomButton(1.25)}
-        onZoomOut={() => zoomButton(1 / 1.25)}
-        onFitSong={fitSong}
+        appMode={appMode}
+        onSetAppMode={handleSetAppMode}
+        keepTakes={keepTakes}
+        onToggleKeepTakes={() => setKeepTakes(k => !k)}
+        takeCount={takesRef.current.length}
+        onClearTakes={clearTakes}
       />
 
       {/* Real-Time Pitch Coaching Feedback Bar */}
       <CoachingHUD
         feedback={coachingFeedback}
         hasMainTrack={!!mainTrack}
+        tunerMode={isTuner}
+        referenceA4={referenceA4}
       />
 
-      {/* Musical Harmony & Interval Settings */}
-      <HarmonyPanel
-        activePreset={activeHarmonyPreset}
-        onSelectPreset={(p) => {
-          setActiveHarmonyPreset(p);
-          harmonyEngineRef.current.activePreset = p;
-        }}
-        rootIndex={rootIndex}
-        onSelectRoot={(r) => {
-          setRootIndex(r);
-          harmonyEngineRef.current.rootIndex = r;
-        }}
-        activeMode={activeMode}
-        onSelectMode={(m) => {
-          setActiveMode(m);
-          harmonyEngineRef.current.activeMode = m;
-        }}
-        customSemitones={customSemitones}
-        onChangeCustomSemitones={(st) => {
-          setCustomSemitones(st);
-          harmonyEngineRef.current.customSemitones = st;
-        }}
-        detectedKey={detectedKey}
-        onApplyDetectedKey={handleApplyDetectedKey}
-      />
+      {isTuner ? (
+        <div className="mx-4 mb-2 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">Tuner</span>
+          <div className="flex items-center gap-1.5 bg-slate-950/70 px-2 py-1 rounded-lg border border-slate-800">
+            <span className="text-[10px] uppercase font-bold text-slate-400">A4 =</span>
+            <input
+              type="number"
+              min={400}
+              max={480}
+              step={0.5}
+              value={referenceA4}
+              onChange={(e) => setReferenceA4(Math.max(400, Math.min(480, Number(e.target.value) || 440)))}
+              className="bg-slate-900 text-cyan-300 font-mono px-1.5 py-0.5 rounded outline-none border border-slate-800 w-16"
+            />
+            <span className="text-slate-500 text-[10px]">Hz</span>
+            {referenceA4 !== 440 && (
+              <button onClick={() => setReferenceA4(440)} className="text-[10px] text-slate-400 hover:text-cyan-300 ml-1">reset</button>
+            )}
+          </div>
+          <span className="text-slate-400">
+            Sing or play a sustained note — the needle shows the distance to the nearest note. No reference track needed.
+          </span>
+          {!isMicActive && (
+            <button onClick={startMic} className="ml-auto px-3 py-1 rounded bg-rose-600 text-white font-semibold">Enable mic</button>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Musical Harmony & Interval Settings */}
+          <HarmonyPanel
+            activePreset={activeHarmonyPreset}
+            onSelectPreset={setActiveHarmonyPreset}
+            rootIndex={rootIndex}
+            onSelectRoot={(r) => {
+              keyTouchedRef.current = true;
+              setRootIndex(r);
+            }}
+            activeMode={activeMode}
+            onSelectMode={(m) => {
+              keyTouchedRef.current = true;
+              setActiveMode(m);
+            }}
+            customSemitones={customSemitones}
+            onChangeCustomSemitones={setCustomSemitones}
+            detectedKey={detectedKey}
+            onApplyDetectedKey={handleApplyDetectedKey}
+            anyOctave={anyOctave}
+            onToggleAnyOctave={() => {
+              setAnyOctave(a => !a);
+              comparatorRef.current.resetScore();
+            }}
+          />
 
-      {/* Main Pitch Visualizer Canvas (Reference UI) */}
+          {/* Speed, metronome, count-in */}
+          <PracticePanel
+            speed={speed}
+            onSpeedChange={handleSpeedChange}
+            speedProgress={speedProgress}
+            metronomeOn={metronomeOn}
+            onToggleMetronome={() => setMetronomeOn(m => !m)}
+            bpm={bpm}
+            onBpmChange={setBpm}
+            beatsPerBar={beatsPerBar}
+            onBeatsPerBarChange={setBeatsPerBar}
+            onTap={handleTap}
+            onDetectTempo={handleDetectTempo}
+            tempoStatus={tempoStatus}
+            canDetectTempo={tracks.some(t => t.audioBuffer)}
+            countInMode={countInMode}
+            onCountInModeChange={setCountInMode}
+            countInCustomBeats={countInCustomBeats}
+            onCountInCustomBeatsChange={setCountInCustomBeats}
+          />
+        </>
+      )}
+
+      {/* Main Pitch Visualizer Canvas */}
       <div className="flex-1 min-h-0 relative flex flex-col">
         <VisualizerCanvas
-          tracks={tracks}
-          micHistory={micHistory}
+          tracks={isTuner ? [] : tracks}
+          takes={isTuner ? tunerTakes : takesRef.current}
+          liveClockStart={isTuner ? tunerClockStart : null}
           options={{
             theme: currentTheme,
-            noteLabelMode,
+            noteLabelMode: isTuner && noteLabelMode === 'cs_only' ? 'all_notes' : noteLabelMode,
             enharmonic,
-            minMidi,
-            maxMidi,
-            visibleDuration,
+            minMidi: isTuner ? tunerRange.min : minMidi,
+            maxMidi: isTuner ? tunerRange.max : maxMidi,
+            visibleDuration: isTuner ? 8 : visibleDuration,
             timeOffset,
             currentTime,
-            targetPitchMidi: currentTargetPitch.targetMidi
+            harmonyNotes: isTuner ? undefined : harmonyNotes,
+            beatGrid: !isTuner && metronomeOn ? { bpm, firstBeat, beatsPerBar } : null,
+            highlightMidi: isTuner ? tunerNote : null,
+            hidePlayhead: isTuner
           }}
           onSeek={handleSeek}
           onScrollBy={scrollBy}
           onZoomAt={zoomAt}
         />
 
-        {/* Floating Quick Demo Button if no track loaded */}
-        {!tracks.some(t => t.audioBuffer) && (
+        {/* Count-in overlay */}
+        {countInLeft > 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-7xl font-black font-mono text-cyan-300/80 drop-shadow-lg">{countInLeft}</div>
+          </div>
+        )}
+
+        {/* Quick demo if no track loaded */}
+        {!isTuner && !tracks.some(t => t.audioBuffer) && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="bg-slate-900/90 border border-slate-700/80 p-5 rounded-2xl shadow-2xl backdrop-blur max-w-sm text-center pointer-events-auto">
               <h3 className="font-bold text-sm text-white mb-1">Welcome to Praat Vocal Studio</h3>
               <p className="text-xs text-slate-400 mb-4">
-                Enable your microphone to sing in real time, upload audio files into the 6 track slots below, or try the instant demo.
+                Upload audio files into the 6 track slots below, try the instant demo, or switch to Tuner mode to sing freely.
               </p>
               <div className="flex gap-2 justify-center">
                 <button
@@ -714,21 +1056,23 @@ export function App() {
       </div>
 
       {/* Song timeline: scrollbar, overview, zoom */}
-      <TimelineScrollbar
-        duration={maxDuration}
-        currentTime={currentTime}
-        timeOffset={timeOffset}
-        visibleDuration={visibleDuration}
-        minVisibleDuration={MIN_VISIBLE}
-        tracks={tracks}
-        autoFollow={autoFollow}
-        onScrollTo={scrollTo}
-        onSetView={setViewWindow}
-        onZoomIn={() => zoomButton(1.25)}
-        onZoomOut={() => zoomButton(1 / 1.25)}
-        onToggleAutoFollow={() => setAutoFollow(a => !a)}
-        onFitSong={fitSong}
-      />
+      {!isTuner && (
+        <TimelineScrollbar
+          duration={maxDuration}
+          currentTime={currentTime}
+          timeOffset={timeOffset}
+          visibleDuration={visibleDuration}
+          minVisibleDuration={MIN_VISIBLE}
+          tracks={tracks}
+          autoFollow={autoFollow}
+          onScrollTo={scrollTo}
+          onSetView={setViewWindow}
+          onZoomIn={() => zoomButton(1.25)}
+          onZoomOut={() => zoomButton(1 / 1.25)}
+          onToggleAutoFollow={() => setAutoFollow(a => !a)}
+          onFitSong={fitSong}
+        />
+      )}
 
       {/* Bottom: 6 Audio Tracks Management & Filter Matrix */}
       <TrackList

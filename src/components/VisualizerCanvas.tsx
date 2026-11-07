@@ -1,12 +1,16 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { NoteGridRenderer, RendererOptions, NOTE_AXIS_WIDTH } from '../visualizer/NoteGridRenderer';
+import { NoteGridRenderer, RendererOptions, NOTE_AXIS_WIDTH, MicTake } from '../visualizer/NoteGridRenderer';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
-import { PitchFrame } from '../audio/PraatPitchEngine';
 
 interface VisualizerCanvasProps {
   tracks: AudioTrackState[];
-  micHistory: PitchFrame[];
+  takes: MicTake[];
   options: RendererOptions;
+  /**
+   * Live mode (tuner): performance.now() timestamp of t=0. The view scrolls with the clock
+   * every animation frame and timeline interactions are disabled.
+   */
+  liveClockStart?: number | null;
   onSeek: (timeSeconds: number) => void;
   /** Scroll the view horizontally by a number of seconds (positive = later). */
   onScrollBy?: (deltaSeconds: number) => void;
@@ -16,8 +20,9 @@ interface VisualizerCanvasProps {
 
 export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   tracks,
-  micHistory,
+  takes,
   options,
+  liveClockStart,
   onSeek,
   onScrollBy,
   onZoomAt
@@ -27,8 +32,8 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   const rendererRef = useRef<NoteGridRenderer | null>(null);
 
   // Latest props for the render loop and native event handlers (avoids re-subscribing every frame)
-  const latest = useRef({ tracks, micHistory, options, onSeek, onScrollBy, onZoomAt });
-  latest.current = { tracks, micHistory, options, onSeek, onScrollBy, onZoomAt };
+  const latest = useRef({ tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt });
+  latest.current = { tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt };
 
   const [dragMode, setDragMode] = useState<'none' | 'seek' | 'pan'>('none');
   const lastMouseXRef = useRef<number>(0);
@@ -73,7 +78,13 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   useEffect(() => {
     let animId: number;
     const renderLoop = () => {
-      const { tracks: t, micHistory: m, options: o } = latest.current;
+      const { tracks: t, takes: m, liveClockStart: live } = latest.current;
+      let o = latest.current.options;
+      if (live != null) {
+        // Scroll with the live clock: "now" sits at 85% of the width
+        const now = (performance.now() - live) / 1000;
+        o = { ...o, currentTime: now, timeOffset: now - o.visibleDuration * 0.85 };
+      }
       if (rendererRef.current && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
@@ -103,8 +114,9 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
     if (!canvas) return;
 
     const handleWheel = (e: WheelEvent) => {
-      const { options: o, onZoomAt: zoomAt, onScrollBy: scrollBy } = latest.current;
+      const { options: o, onZoomAt: zoomAt, onScrollBy: scrollBy, liveClockStart: live } = latest.current;
       e.preventDefault();
+      if (live != null) return;
 
       // Normalize delta to pixels
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
@@ -129,7 +141,7 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   // Pointer interactions: left-drag = seek/scrub, middle-drag / Alt+drag / Shift+drag = pan
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || liveClockStart != null) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     lastMouseXRef.current = e.clientX;
 
