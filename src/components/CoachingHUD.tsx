@@ -129,9 +129,13 @@ export const CoachingHUD: React.FC<CoachingHUDProps> = ({
       {/* Right: Suggestion Pill & Accuracy Score */}
       <div className="flex items-center gap-3">
         {/* Suggestion Badge */}
-        <div className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold tracking-tight ${badgeColor}`}>
-          {IconComponent && <IconComponent className="w-4 h-4 shrink-0" />}
-          <span>{suggestion}</span>
+        {/* Fixed-size status icon (✓ in tune, ↑ sing higher, ↓ sing lower) so the row never shifts */}
+        <div
+          className={`w-11 h-11 shrink-0 rounded-lg flex items-center justify-center ${badgeColor}`}
+          title={suggestion}
+          aria-label={suggestion}
+        >
+          {IconComponent ? <IconComponent className="w-6 h-6" /> : <span className="text-slate-600 text-lg">·</span>}
         </div>
 
         {/* Precision */}

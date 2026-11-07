@@ -154,3 +154,30 @@ export function filterLatestFrames(frames: PitchFrame[]) {
     }
   }
 }
+
+/**
+ * Dead band for the drawn pitch line: the line only moves when the pitch has changed by more
+ * than `cents` since the last registered value; smaller wobble is not drawn.
+ */
+export class PitchDeadband {
+  private held: number | null = null;
+
+  reset() {
+    this.held = null;
+  }
+
+  /** Applies the dead band to the last frame of `frames` in place. */
+  process(frames: PitchFrame[], cents: number) {
+    const i = frames.length - 1;
+    const f = frames[i];
+    if (!f || !f.voiced || f.frequency <= 0) {
+      this.held = null;
+      return;
+    }
+    if (this.held === null || Math.abs(f.exactMidi - this.held) * 100 > cents) {
+      this.held = f.exactMidi;
+      return;
+    }
+    frames[i] = shiftFrame(f, this.held - f.exactMidi);
+  }
+}

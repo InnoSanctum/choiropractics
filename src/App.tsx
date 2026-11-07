@@ -16,7 +16,7 @@ import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
 import { BatchPitchExtractor, PITCH_ANALYSIS_VERSION } from './audio/BatchPitchExtractor';
 import { PitchComparator, CoachingFeedback } from './audio/PitchComparator';
 import { detectTempo } from './audio/TempoDetector';
-import { filterLatestFrames, OctaveStabilizer } from './audio/LivePitchFilter';
+import { filterLatestFrames, OctaveStabilizer, PitchDeadband } from './audio/LivePitchFilter';
 import {
   MusicalHarmonyEngine,
   MusicalMode,
@@ -175,6 +175,8 @@ export function App() {
       return 10;
     }
   });
+  const precisionRef = useRef(precisionCents);
+  precisionRef.current = precisionCents;
   useEffect(() => {
     comparatorRef.current.toleranceCents = precisionCents;
     comparatorRef.current.resetScore();
@@ -257,12 +259,20 @@ export function App() {
   const tunerStabRef = useRef(new OctaveStabilizer());
   const idleStabRef = useRef(new OctaveStabilizer());
   const idleFramesRef = useRef<PitchFrame[]>([]); // mic frames while not recording (coach display only)
+  const deadbands = useRef(new WeakMap<OctaveStabilizer, PitchDeadband>());
 
   /** Appends a live frame, cleans it up, and returns the cleaned latest frame. */
   const appendLive = (frames: PitchFrame[], frame: PitchFrame, stab: OctaveStabilizer, maxLen: number, trim: number) => {
     frames.push(frame);
     stab.process(frames);
     filterLatestFrames(frames);
+    // Pitch changes within the precision setting are not registered (flat line instead of wobble)
+    let deadband = deadbands.current.get(stab);
+    if (!deadband) {
+      deadband = new PitchDeadband();
+      deadbands.current.set(stab, deadband);
+    }
+    deadband.process(frames, precisionRef.current);
     const cleaned = frames[frames.length - 1];
     if (frames.length > maxLen) {
       frames.splice(0, trim);
@@ -280,6 +290,7 @@ export function App() {
     takesRef.current = next.slice(-MAX_TAKES);
     forceNewTakeRef.current = false;
     takeStabRef.current.reset();
+    deadbands.current.get(takeStabRef.current)?.reset();
     setTakesVersion(v => v + 1);
     return takesRef.current[takesRef.current.length - 1];
   }, []);
