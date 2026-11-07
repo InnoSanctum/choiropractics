@@ -40,3 +40,73 @@
 .touch-ui section button {
   min-height: 2.25rem;
 }
+
+/* ------------------------------------------------------------------
+   App-wide themes. Tailwind v4 colour utilities read CSS variables,
+   so re-mapping the palette re-themes every panel without class changes.
+   (Dark Studio = Tailwind defaults.)
+   ------------------------------------------------------------------ */
+
+/* Clean Light: inverted greys, darker accents for contrast on white */
+:root[data-theme='clean_light'] {
+  color-scheme: light;
+  --color-slate-950: #f1f5f9;
+  --color-slate-900: #ffffff;
+  --color-slate-800: #e2e8f0;
+  --color-slate-700: #cbd5e1;
+  --color-slate-600: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-400: #475569;
+  --color-slate-300: #334155;
+  --color-slate-200: #1e293b;
+  --color-slate-100: #0f172a;
+  --color-slate-50: #020617;
+
+  --color-cyan-950: #ecfeff; --color-cyan-900: #cffafe; --color-cyan-800: #a5f3fc;
+  --color-cyan-400: #0891b2; --color-cyan-300: #0e7490; --color-cyan-200: #155e75;
+  --color-indigo-950: #eef2ff; --color-indigo-900: #e0e7ff; --color-indigo-800: #c7d2fe;
+  --color-indigo-400: #4f46e5; --color-indigo-300: #4338ca; --color-indigo-200: #3730a3;
+  --color-rose-950: #fff1f2; --color-rose-900: #ffe4e6; --color-rose-800: #fecdd3;
+  --color-rose-400: #e11d48; --color-rose-300: #be123c; --color-rose-200: #9f1239;
+  --color-amber-950: #fffbeb; --color-amber-900: #fef3c7; --color-amber-800: #fde68a;
+  --color-amber-400: #d97706; --color-amber-300: #b45309; --color-amber-200: #92400e;
+  --color-emerald-950: #ecfdf5; --color-emerald-900: #d1fae5; --color-emerald-800: #a7f3d0;
+  --color-emerald-400: #059669; --color-emerald-300: #047857;
+  --color-purple-950: #faf5ff; --color-purple-900: #f3e8ff; --color-purple-800: #e9d5ff;
+  --color-purple-400: #9333ea; --color-purple-300: #7e22ce;
+  --color-orange-400: #ea580c;
+}
+
+/* OLED Midnight: true black, neutral greys */
+:root[data-theme='oled_midnight'] {
+  --color-slate-950: #000000;
+  --color-slate-900: #0a0a0a;
+  --color-slate-800: #1c1c1c;
+  --color-slate-700: #2e2e2e;
+  --color-slate-600: #474747;
+  --color-slate-500: #737373;
+  --color-slate-400: #a3a3a3;
+  --color-slate-300: #d4d4d4;
+  --color-slate-200: #e5e5e5;
+  --color-slate-100: #f5f5f5;
+  --color-slate-50: #fafafa;
+}
+
+/* Warm Sunset: purple-tinted greys, pink accents */
+:root[data-theme='warm_sunset'] {
+  --color-slate-950: #150d1e;
+  --color-slate-900: #211330;
+  --color-slate-800: #3b2154;
+  --color-slate-700: #4f2d6e;
+  --color-slate-600: #6e4b8e;
+  --color-slate-500: #9274ab;
+  --color-slate-400: #b69dca;
+  --color-slate-300: #d5c3e4;
+  --color-slate-200: #e9ddf2;
+  --color-slate-100: #f4eef9;
+  --color-slate-50: #fbf8fd;
+
+  --color-cyan-950: #500724; --color-cyan-900: #831843; --color-cyan-800: #9d174d;
+  --color-cyan-700: #be185d; --color-cyan-600: #db2777; --color-cyan-500: #ec4899;
+  --color-cyan-400: #f472b6; --color-cyan-300: #f9a8d4; --color-cyan-200: #fbcfe8;
+}

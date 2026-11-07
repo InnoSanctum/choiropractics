@@ -939,6 +939,11 @@ export function App() {
   }, [tracks, harmonyNotes]);
 
   const currentTheme = THEMES[theme];
+  // Whole-app theme (see index.css): the palette is re-mapped per theme
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEMES[theme].bgPanel);
+  }, [theme]);
   const isTuner = appMode === 'tuner';
   // The tuner take object is replaced whenever tuner mode starts (tunerClockStart changes)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1106,7 +1111,8 @@ export function App() {
     onZoomIn: () => zoomButton(1.25),
     onZoomOut: () => zoomButton(1 / 1.25),
     onToggleAutoFollow: () => setAutoFollow(a => !a),
-    onFitSong: fitSong
+    onFitSong: fitSong,
+    themeBackground: currentTheme.bgMain
   };
 
   const trackListProps: TrackListProps = {

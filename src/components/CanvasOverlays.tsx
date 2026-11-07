@@ -22,7 +22,7 @@ export const CanvasOverlays: React.FC<CanvasOverlaysProps> = ({ countInLeft, sho
     {showWelcome && (
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-4">
         <div className="bg-slate-900/90 border border-slate-700/80 p-5 rounded-2xl shadow-2xl backdrop-blur max-w-sm text-center pointer-events-auto">
-          <h3 className="font-bold text-sm text-white mb-1">Welcome to Praat Vocal Studio</h3>
+          <h3 className="font-bold text-sm text-slate-50 mb-1">Welcome to Praat Vocal Studio</h3>
           <p className="text-xs text-slate-400 mb-4">
             Upload audio files {uploadHint}, try the instant demo, or switch to Tuner mode to sing freely.
           </p>

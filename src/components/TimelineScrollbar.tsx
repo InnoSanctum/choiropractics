@@ -19,6 +19,8 @@ export interface TimelineScrollbarProps {
   onZoomOut: () => void;
   onToggleAutoFollow: () => void;
   onFitSong: () => void;
+  /** Background colour of the theme (track colours are adjusted to stay visible on it) */
+  themeBackground?: string;
 }
 
 type DragAction = 'thumb' | 'left-handle' | 'right-handle';
@@ -42,7 +44,8 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
   onZoomIn,
   onZoomOut,
   onToggleAutoFollow,
-  onFitSong
+  onFitSong,
+  themeBackground = '#0b111e'
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const [dragAction, setDragAction] = useState<DragAction | null>(null);
@@ -83,7 +86,7 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
                 top: `${(1 - (s.medianMidi - lo) / span) * 80 + 5}%`,
                 height: '2px',
                 borderRadius: '1px',
-                backgroundColor: track.color,
+                backgroundColor: NoteGridRenderer.readable(track.color, themeBackground),
                 opacity: 0.75
               }}
             />
@@ -91,7 +94,7 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
         )}
       </div>
     );
-  }, [tracks, totalDuration]);
+  }, [tracks, totalDuration, themeBackground]);
 
   // Time tick labels
   const ticks = useMemo(() => {

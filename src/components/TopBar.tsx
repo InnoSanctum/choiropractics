@@ -85,7 +85,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <Music2 className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
+            <h1 className="text-sm font-bold tracking-tight text-slate-50 flex items-center gap-1.5">
               Praat Tuner <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50">1-Cent</span>
             </h1>
           </div>

@@ -125,7 +125,7 @@ export class NoteGridRenderer {
 
     for (const track of tracks) {
       if (track.pitchFrames && track.pitchFrames.length > 0 && !track.muted) {
-        this.renderTrackPills(ctx, track.pitchFrames, track.color, options, timeToX, midiToY, plotHeight, midiRange);
+        this.renderTrackPills(ctx, track.pitchFrames, NoteGridRenderer.readable(track.color, theme.bgMain), options, timeToX, midiToY, plotHeight, midiRange);
       }
     }
 
@@ -137,7 +137,7 @@ export class NoteGridRenderer {
     // 4. Render microphone takes (older takes faded, latest take bright)
     takes.forEach((take, i) => {
       if (take.frames.length > 0) {
-        this.renderMicTrail(ctx, take.frames, take.color, i === takes.length - 1, options, timeToX, midiToY);
+        this.renderMicTrail(ctx, take.frames, NoteGridRenderer.readable(take.color, theme.bgMain), i === takes.length - 1, options, timeToX, midiToY);
       }
     });
 
@@ -367,6 +367,51 @@ export class NoteGridRenderer {
     ctx.moveTo(axisWidth, 0);
     ctx.lineTo(axisWidth, plotHeight);
     ctx.stroke();
+  }
+
+  private static readableCache = new Map<string, string>();
+
+  /**
+   * Returns `color`, darkened or lightened until it stands out against `background`
+   * (e.g. the cream track colour on the light theme).
+   */
+  public static readable(color: string, background: string): string {
+    const key = `${color}|${background}`;
+    const cached = NoteGridRenderer.readableCache.get(key);
+    if (cached) return cached;
+
+    const parse = (hex: string) => {
+      const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+      if (!m) return null;
+      const n = parseInt(m[1], 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    };
+    const lum = (rgb: number[]) => {
+      const [r, g, b] = rgb.map(v => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const fg = parse(color);
+    const bg = parse(background);
+    let result = color;
+    if (fg && bg) {
+      const bgL = lum(bg);
+      const contrast = (rgb: number[]) => {
+        const a = lum(rgb);
+        return (Math.max(a, bgL) + 0.05) / (Math.min(a, bgL) + 0.05);
+      };
+      const target = bgL > 0.5 ? [0, 0, 0] : [255, 255, 255];
+      let rgb = fg;
+      for (let step = 1; step <= 10 && contrast(rgb) < 2.6; step++) {
+        const t = step * 0.08;
+        rgb = fg.map((v, i) => Math.round(v + (target[i] - v) * t));
+      }
+      result = `#${rgb.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+    }
+    NoteGridRenderer.readableCache.set(key, result);
+    return result;
   }
 
   /** Segments cache: pitch frame arrays are immutable once analyzed, so key by reference. */
