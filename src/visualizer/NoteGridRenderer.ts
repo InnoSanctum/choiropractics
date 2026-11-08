@@ -9,6 +9,7 @@
 import { PitchFrame } from '../audio/PraatPitchEngine';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 import { ThemeColors, NoteLabelMode } from './ThemeManager';
+import { MistakeCache, TargetNote } from '../audio/MistakeDetector';
 
 export interface RendererOptions {
   theme: ThemeColors;
@@ -28,6 +29,8 @@ export interface RendererOptions {
   highlightMidi?: number | null;
   /** Hide the playhead (tuner mode) */
   hidePlayhead?: boolean;
+  /** Mark where sung takes go off the target notes */
+  mistakes?: { targets: TargetNote[]; thresholdCents: number; anyOctave: boolean } | null;
 }
 
 export interface HarmonyNote {
@@ -134,12 +137,25 @@ export class NoteGridRenderer {
       this.renderHarmonyNotes(ctx, options, timeToX, midiToY, plotHeight, midiRange);
     }
 
-    // 4. Render microphone takes (older takes faded, latest take bright)
+    // 4. Render microphone takes (older takes faded, latest take bright); mistakes get a halo
+    // under the line and a ring + label on top
+    const showMistakes = !!options.mistakes && options.mistakes.targets.length > 0;
+    this.mistakeLabels = [];
+    if (showMistakes) {
+      takes.forEach((take, i) => {
+        if (take.frames.length > 0) this.renderMistakes(ctx, take, i === takes.length - 1, options, timeToX, midiToY, plotHeight, 'halo');
+      });
+    }
     takes.forEach((take, i) => {
       if (take.frames.length > 0) {
         this.renderMicTrail(ctx, take.frames, NoteGridRenderer.readable(take.color, theme.bgMain), i === takes.length - 1, options, timeToX, midiToY);
       }
     });
+    if (showMistakes) {
+      takes.forEach((take, i) => {
+        if (take.frames.length > 0) this.renderMistakes(ctx, take, i === takes.length - 1, options, timeToX, midiToY, plotHeight, 'marks');
+      });
+    }
 
     // 5. Draw Playhead Vertical Line
     const playheadX = timeToX(options.currentTime);
@@ -739,6 +755,119 @@ export class NoteGridRenderer {
     }
 
     ctx.globalAlpha = 1.0;
+  }
+
+  private static mistakeCache = new MistakeCache();
+  /** Mistake labels drawn in the current frame (to avoid overlaps) */
+  private mistakeLabels: { x1: number; x2: number; y1: number; y2: number }[] = [];
+
+  /**
+   * Highlights where a take goes off the target. 'halo' (drawn under the takes): a wide glow along
+   * the wrong stretch. 'marks' (on top): a ring where it begins and the deviation label.
+   */
+  private renderMistakes(
+    ctx: CanvasRenderingContext2D,
+    take: MicTake,
+    isActive: boolean,
+    options: RendererOptions,
+    timeToX: (t: number) => number,
+    midiToY: (m: number) => number,
+    plotHeight: number,
+    pass: 'halo' | 'marks'
+  ) {
+    const m = options.mistakes!;
+    const mistakes = NoteGridRenderer.mistakeCache.get(take.frames, m.targets, { thresholdCents: m.thresholdCents, anyOctave: m.anyOctave });
+    if (mistakes.length === 0) return;
+    const start = options.timeOffset - 1;
+    const end = options.timeOffset + options.visibleDuration + 1;
+    // Marker colours differ from every take colour: theme contrast (white/black) plus red labels
+    const contrast = NoteGridRenderer.readable('#ffffff', options.theme.bgMain) === '#ffffff' ? '#ffffff' : '#000000';
+    const red = '#e11d48';
+    const frames = take.frames;
+
+    // First frame index at or after time t
+    const indexAt = (t: number) => {
+      let lo = 0;
+      let hi = frames.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (frames[mid].timestamp < t) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    };
+
+    ctx.save();
+    ctx.globalAlpha = isActive ? 1 : 0.6;
+    for (const mk of mistakes) {
+      if (mk.endTime < start || mk.startTime > end) continue;
+      const first = indexAt(mk.startTime);
+
+      if (pass === 'halo') {
+        ctx.save();
+        ctx.globalAlpha *= 0.3;
+        ctx.strokeStyle = contrast;
+        ctx.lineWidth = 13;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        let drawing = false;
+        for (let k = first; k < frames.length && frames[k].timestamp <= mk.endTime; k++) {
+          const f = frames[k];
+          if (!f.voiced || f.frequency <= 0) { drawing = false; continue; }
+          const x = timeToX(f.timestamp);
+          const y = midiToY(f.exactMidi);
+          if (drawing) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+          drawing = true;
+        }
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+
+      // Ring on the sung line where the mistake begins
+      const f0 = frames[Math.min(first, frames.length - 1)];
+      const x = timeToX(mk.startTime);
+      const y = midiToY(f0?.voiced ? f0.exactMidi : mk.sungMidi);
+      ctx.beginPath();
+      ctx.arc(x, y, 11, 0, Math.PI * 2);
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = contrast;
+      ctx.stroke();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = red;
+      ctx.stroke();
+
+      // Deviation label; the sung note name is added when it is a different note
+      const sungNote = Math.round(mk.sungMidi);
+      const targetNote = Math.round(mk.targetMidi);
+      const cents = `${mk.cents > 0 ? '+' : '−'}${Math.abs(mk.cents)}¢`;
+      const label = sungNote !== targetNote
+        ? `${NoteGridRenderer.midiName(sungNote, options.enharmonic)} ≠ ${NoteGridRenderer.midiName(targetNote, options.enharmonic)}  ${cents}`
+        : cents;
+      ctx.font = '700 10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      const w = ctx.measureText(label).width + 10;
+      // Above when sharp, below when flat (away from the target note); the other side if that
+      // spot is taken; no label (ring only) if both are
+      const clampY = (v: number) => Math.max(28, Math.min(plotHeight - 10, v));
+      const sides = mk.cents > 0 ? [y - 24, y + 24] : [y + 24, y - 24];
+      const free = (ly: number) => !this.mistakeLabels.some(r => x - 5 < r.x2 && x - 5 + w > r.x1 && ly - 8 < r.y2 && ly + 8 > r.y1);
+      const spot = sides.map(clampY).find(free);
+      if (spot === undefined) continue;
+      const ly = spot;
+      this.mistakeLabels.push({ x1: x - 5, x2: x - 5 + w, y1: ly - 8, y2: ly + 8 });
+      ctx.fillStyle = red;
+      ctx.beginPath();
+      ctx.roundRect(x - 5, ly - 8, w, 16, 4);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = contrast;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, x, ly + 0.5);
+    }
+    ctx.restore();
   }
 
   /**

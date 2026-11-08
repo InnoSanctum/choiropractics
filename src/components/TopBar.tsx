@@ -43,6 +43,9 @@ export interface TopBarProps {
   onToggleKeepTakes: () => void;
   takeCount: number;
   onClearTakes: () => void;
+
+  /** Extra controls at the start of the right-hand group (desktop) */
+  extra?: React.ReactNode;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -67,7 +70,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   keepTakes,
   onToggleKeepTakes,
   takeCount,
-  onClearTakes
+  onClearTakes,
+  extra
 }) => {
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -175,6 +179,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {/* Right: Mode, Display Preferences & Theme */}
       <div className="flex items-center gap-2">
+        {extra}
         <div className="flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-lg border border-slate-800 text-xs">
           <button
             onClick={() => onSetAppMode('practice')}

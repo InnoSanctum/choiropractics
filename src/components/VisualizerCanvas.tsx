@@ -266,7 +266,7 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   };
 
   return (
-    <div ref={containerRef} className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
+    <div ref={containerRef} data-diagram className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}

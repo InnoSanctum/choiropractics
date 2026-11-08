@@ -8,6 +8,9 @@ import { TimelineScrollbar, TimelineScrollbarProps } from './components/Timeline
 import { PracticePanel, PracticePanelProps, CountInMode } from './components/PracticePanel';
 import { TunerPanel, TunerPanelProps } from './components/TunerPanel';
 import { CanvasOverlays } from './components/CanvasOverlays';
+import { ReviewControls, ReviewControlsProps, MISTAKE_LEVELS } from './components/ReviewControls';
+import { exportDiagram, saveFile, ExportFormat, ExportRange } from './visualizer/DiagramExport';
+import { TargetNote } from './audio/MistakeDetector';
 import { MobileLayout } from './components/mobile/MobileLayout';
 import { useIsMobile } from './hooks/useIsMobile';
 
@@ -183,6 +186,26 @@ export function App() {
     try { localStorage.setItem('choiro.precisionCents', String(precisionCents)); } catch { /* storage unavailable */ }
   }, [precisionCents]);
   const tunerNoteRef = useRef<number | null>(null);
+
+  // Mistake highlighting (off by default) and its sensitivity, remembered between visits
+  const [highlightMistakes, setHighlightMistakes] = useState(() => {
+    try { return localStorage.getItem('choiro.highlightMistakes') === '1'; } catch { return false; }
+  });
+  const [mistakeCents, setMistakeCents] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('choiro.mistakeCents'));
+      return MISTAKE_LEVELS.includes(v) ? v : 25;
+    } catch {
+      return 25;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('choiro.highlightMistakes', highlightMistakes ? '1' : '0');
+      localStorage.setItem('choiro.mistakeCents', String(mistakeCents));
+    } catch { /* storage unavailable */ }
+  }, [highlightMistakes, mistakeCents]);
+  const [exporting, setExporting] = useState(false);
   const anyOctaveRef = useRef(anyOctave);
   anyOctaveRef.current = anyOctave;
 
@@ -942,6 +965,17 @@ export function App() {
     }));
   }, [mainTrack, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
 
+  // Target notes for mistake detection: reference notes, or the harmony notes when an interval is
+  // active (keeping the reference's own tuning offset)
+  const targetNotes = useMemo<TargetNote[]>(() => {
+    if (!mainTrack) return [];
+    const segs = NoteGridRenderer.getSegments(mainTrack.pitchFrames);
+    if (harmonyNotes.length === segs.length && harmonyNotes.length > 0) {
+      return segs.map((s, i) => ({ startTime: s.startTime, endTime: s.endTime, midi: harmonyNotes[i].midi + (s.medianMidi - s.nearestMidi) }));
+    }
+    return segs.map(s => ({ startTime: s.startTime, endTime: s.endTime, midi: s.medianMidi }));
+  }, [mainTrack, harmonyNotes]);
+
   // Note range on the grid: fit to the pitches of the loaded tracks and harmony (default A2..F5)
   const { minMidi, maxMidi } = useMemo(() => {
     const pitches: number[] = [];
@@ -1123,11 +1157,79 @@ export function App() {
       harmonyNotes: isTuner ? undefined : harmonyNotes,
       beatGrid: !isTuner && metronomeOn ? { bpm, firstBeat, beatsPerBar } : null,
       highlightMidi: isTuner ? tunerNote : null,
-      hidePlayhead: isTuner
+      hidePlayhead: isTuner,
+      mistakes: !isTuner && highlightMistakes && targetNotes.length > 0
+        ? { targets: targetNotes, thresholdCents: mistakeCents, anyOctave }
+        : null
     },
     onSeek: handleSeek,
     onScrollBy: scrollBy,
     onZoomAt: zoomAt
+  };
+
+  // ---- Export (same renderer and settings as on screen) ----
+  const handleExport = async (format: ExportFormat, range: ExportRange) => {
+    const el = document.querySelector('[data-diagram]');
+    if (!el || exporting) return;
+    const rect = el.getBoundingClientRect();
+    let options = visualizerProps.options;
+    if (isTuner && tunerClockStart != null) {
+      const now = (performance.now() - tunerClockStart) / 1000;
+      options = { ...options, currentTime: now, timeOffset: now - options.visibleDuration * 0.85 };
+    }
+    const song = range === 'song' && !isTuner;
+    if (song) options = { ...options, hidePlayhead: true };
+
+    const takes = visualizerProps.takes.filter(t => t.frames.length > 0);
+    const shownTracks = visualizerProps.tracks.filter(t => !t.muted && t.pitchFrames.length > 0);
+    const details = [new Date().toLocaleString()];
+    if (!isTuner) {
+      if (activeHarmonyPreset.group !== 'unison') details.push(activeHarmonyPreset.name);
+      if (anyOctave) details.push('any octave');
+      if (speed !== 1) details.push(`speed ×${speed}`);
+      if (metronomeOn) details.push(`${bpm} BPM ${beatsPerBar}/4`);
+    } else {
+      details.push(`A4 = ${referenceA4} Hz`);
+    }
+    details.push(`precision ±${precisionCents}¢`);
+    if (options.mistakes) details.push(`mistakes > ${mistakeCents}¢`);
+
+    setExporting(true);
+    try {
+      const file = await exportDiagram({
+        tracks: visualizerProps.tracks,
+        takes,
+        options,
+        width: rect.width,
+        height: rect.height,
+        duration: maxDuration,
+        title: isTuner ? 'Choiropractics · Tuner' : `Choiropractics · ${mainTrack?.name ?? shownTracks[0]?.name ?? 'Practice'}`,
+        details,
+        legend: [
+          ...shownTracks.map(t => ({ color: t.color, label: t.isMain ? `★ ${t.name}` : t.name })),
+          ...(options.harmonyNotes?.length ? [{ color: options.harmonyColor || '#a78bfa', label: 'Harmony' }] : []),
+          ...(isTuner ? [] : takes.map(t => ({ color: t.color, label: `Take ${t.id + 1}` })))
+        ]
+      }, format, range);
+      await saveFile(file, isMobile);
+    } catch (e) {
+      console.error('Export failed', e);
+      alert('Export failed: ' + (e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const reviewProps: ReviewControlsProps = {
+    showMistakeControls: !isTuner,
+    highlightMistakes,
+    onToggleHighlightMistakes: () => setHighlightMistakes(h => !h),
+    mistakeCents,
+    onMistakeCentsChange: setMistakeCents,
+    canHighlight: !!mainTrack,
+    onExport: handleExport,
+    exporting,
+    canExportSong: !isTuner && maxDuration > 0
   };
 
   const timelineProps: TimelineScrollbarProps = {
@@ -1180,13 +1282,14 @@ export function App() {
         timeline={timelineProps}
         trackList={trackListProps}
         overlays={overlayProps}
+        review={reviewProps}
       />
     );
   }
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
-      <TopBar {...topBarProps} />
+      <TopBar {...topBarProps} extra={<ReviewControls {...reviewProps} />} />
 
       {/* Real-Time Pitch Coaching Feedback Bar */}
       <CoachingHUD {...hudProps} />

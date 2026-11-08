@@ -12,6 +12,7 @@ import { TimelineScrollbar, TimelineScrollbarProps } from '../TimelineScrollbar'
 import { TrackListProps } from '../TrackList';
 import { CanvasOverlays, CanvasOverlaysProps } from '../CanvasOverlays';
 import { MobileHUD } from './MobileHUD';
+import { ReviewControlsEmbedded, ReviewControlsProps } from '../ReviewControls';
 import { MobileTrackList } from './MobileTrackList';
 import { THEMES, ThemeId } from '../../visualizer/ThemeManager';
 import { useIsShortScreen } from '../../hooks/useIsMobile';
@@ -26,6 +27,7 @@ export interface MobileLayoutProps {
   timeline: TimelineScrollbarProps;
   trackList: TrackListProps;
   overlays: Omit<CanvasOverlaysProps, 'uploadHint'>;
+  review: ReviewControlsProps;
 }
 
 type SheetId = 'tracks' | 'harmony' | 'practice' | 'settings' | null;
@@ -50,7 +52,8 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
   visualizer,
   timeline,
   trackList,
-  overlays
+  overlays,
+  review
 }) => {
   const [sheet, setSheet] = useState<SheetId>(null);
   const short = useIsShortScreen();
@@ -183,6 +186,8 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
                         </span>
                       </div>
                     )}
+
+                    <ReviewControlsEmbedded {...review} />
 
                     {topBar.inputDevices.length > 0 && (
                       <label className="flex flex-col gap-1">
