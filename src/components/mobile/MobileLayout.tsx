@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Play, Pause, Square, Mic, MicOff, Activity, ListMusic, Music, Gauge, Settings, X, Trash2, Headphones
+  Play, Pause, Square, Mic, MicOff, ListMusic, Music, Gauge, Settings, X, Trash2, Headphones
 } from 'lucide-react';
 import { TopBarProps } from '../TopBar';
 import { CoachingHUDProps, PrecisionSlider } from '../CoachingHUD';
 import { HarmonyPanel, HarmonyPanelProps } from '../HarmonyPanel';
 import { PracticePanel, PracticePanelProps } from '../PracticePanel';
 import { TunerPanel, TunerPanelProps } from '../TunerPanel';
+import { TrainingPanel, TrainingPanelProps } from '../TrainingPanel';
 import { VisualizerCanvas, VisualizerCanvasProps } from '../VisualizerCanvas';
 import { TimelineScrollbar, TimelineScrollbarProps } from '../TimelineScrollbar';
 import { TrackListProps } from '../TrackList';
@@ -23,6 +24,7 @@ export interface MobileLayoutProps {
   harmony: HarmonyPanelProps;
   practice: PracticePanelProps;
   tuner: TunerPanelProps;
+  training: TrainingPanelProps;
   visualizer: VisualizerCanvasProps;
   timeline: TimelineScrollbarProps;
   trackList: TrackListProps;
@@ -49,6 +51,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
   harmony,
   practice,
   tuner,
+  training,
   visualizer,
   timeline,
   trackList,
@@ -58,6 +61,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
   const [sheet, setSheet] = useState<SheetId>(null);
   const short = useIsShortScreen();
   const isTuner = topBar.appMode === 'tuner';
+  const isTraining = topBar.appMode === 'training';
   const loadedCount = trackList.tracks.filter(t => t.audioBuffer).length;
 
   // Headphones tip: the phone mic would otherwise pick up the backing track from the speaker
@@ -74,12 +78,15 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
   useEffect(() => {
     if (isTuner && (sheet === 'harmony' || sheet === 'practice' || sheet === 'tracks')) setSheet(null);
   }, [isTuner, sheet]);
+  useEffect(() => {
+    if (isTraining && sheet === 'harmony') setSheet(null);
+  }, [isTraining, sheet]);
 
   const tabs: { id: Exclude<SheetId, null>; label: string; icon: React.ReactNode; badge?: number }[] = isTuner
     ? [{ id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> }]
     : [
       { id: 'tracks', label: 'Tracks', icon: <ListMusic className="w-5 h-5" />, badge: loadedCount || undefined },
-      { id: 'harmony', label: 'Harmony', icon: <Music className="w-5 h-5" /> },
+      ...(!isTraining ? [{ id: 'harmony' as const, label: 'Harmony', icon: <Music className="w-5 h-5" /> }] : []),
       { id: 'practice', label: 'Tempo', icon: <Gauge className="w-5 h-5" /> },
       { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> }
     ];
@@ -91,29 +98,30 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
     settings: isTuner ? 'Tuner & display' : 'Microphone & display'
   };
 
-  const segBtn = (active: boolean) =>
-    `px-2.5 h-8 rounded-md text-xs font-semibold flex items-center gap-1 ${active ? 'bg-cyan-900 text-cyan-200' : 'text-slate-400'}`;
-
   return (
     <div className="touch-ui flex flex-col h-[100dvh] w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
       {/* Header: mode, time, mic, transport */}
       <header className={`flex items-center gap-2 px-2 ${short ? 'h-11' : 'h-14'} shrink-0 border-b border-slate-800 bg-slate-900/90 pt-[env(safe-area-inset-top)]`}>
-        <div className="flex bg-slate-950/70 p-0.5 rounded-lg border border-slate-800">
-          <button className={segBtn(!isTuner)} onClick={() => topBar.onSetAppMode('practice')}>Practice</button>
-          <button className={segBtn(isTuner)} onClick={() => topBar.onSetAppMode('tuner')}>
-            <Activity className="w-3.5 h-3.5" />Tuner
-          </button>
-        </div>
+        <select
+          aria-label="Mode"
+          value={topBar.appMode}
+          onChange={e => topBar.onSetAppMode(e.target.value as TopBarProps['appMode'])}
+          className="w-24 h-9 shrink-0 bg-slate-950 text-cyan-200 px-2 rounded-lg border border-slate-800 text-xs font-semibold"
+        >
+          <option value="practice">Practice</option>
+          <option value="training">Training</option>
+          <option value="tuner">Tuner</option>
+        </select>
 
         {!isTuner && (
-          <div className="font-mono text-[11px] text-slate-400 ml-auto tabular-nums">
+          <div className="hidden min-[400px]:block font-mono text-[11px] text-slate-400 ml-auto tabular-nums">
             <span className="text-cyan-300 font-bold">{formatTime(topBar.currentTime)}</span>
             <span className="text-slate-600"> / </span>
             {formatTime(topBar.duration)}
           </div>
         )}
 
-        <div className={`flex items-center gap-1.5 ${isTuner ? 'ml-auto' : ''}`}>
+        <div className="flex items-center gap-1.5 ml-auto">
           <button
             onClick={topBar.onToggleMic}
             className={`w-10 h-10 rounded-full flex items-center justify-center ${
@@ -145,6 +153,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
       </header>
 
       <MobileHUD {...hud} compact={short} />
+      {isTraining && <TrainingPanel {...training} />}
 
       {showHeadphonesTip && (
         <div className={`flex items-center gap-2 px-3 ${short ? 'py-0.5 text-[11px]' : 'py-2 text-xs'} bg-amber-950/70 border-b border-amber-700/50 text-amber-200`}>

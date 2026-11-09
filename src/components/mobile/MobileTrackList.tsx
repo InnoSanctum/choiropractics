@@ -5,6 +5,7 @@ import { TrackListProps } from '../TrackList';
 /** Compact track list for phones: one row per track. */
 export const MobileTrackList: React.FC<TrackListProps> = ({
   tracks,
+  trainingTrackIndex = null,
   onUploadFile,
   onToggleMute,
   onToggleSolo,
@@ -73,26 +74,31 @@ export const MobileTrackList: React.FC<TrackListProps> = ({
                 <>
                   <div className="flex-1 min-w-0 leading-tight">
                     <div className="text-sm font-semibold text-slate-200 truncate">{track.name}</div>
-                    <div className="text-[10px] text-slate-500 font-mono">T{track.index + 1} · {track.duration.toFixed(1)}s</div>
+                    <div className="text-[10px] text-slate-400 font-mono">{track.index === trainingTrackIndex ? 'Sing · silent · ' : ''}T{track.index + 1} · {track.duration.toFixed(1)}s</div>
                   </div>
                   <button
                     onClick={() => onSetMainTrack(track.index)}
                     className={`${btn} ${track.isMain ? 'text-amber-400 bg-amber-400/15' : 'text-slate-500 bg-slate-800'}`}
                     aria-label="Use as reference"
-                    title="Reference track for coaching"
+                    aria-pressed={track.isMain}
+                    title={track.index === trainingTrackIndex ? 'Your training part (silent)' : 'Reference track for coaching'}
                   >
                     <Star className="w-4 h-4 fill-current" />
                   </button>
                   <button
                     onClick={() => onToggleMute(track.index)}
-                    className={`${btn} text-xs font-bold ${track.muted ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400'}`}
-                    aria-label="Mute"
+                    disabled={track.index === trainingTrackIndex}
+                    className={`${btn} text-xs font-bold ${track.muted || track.index === trainingTrackIndex ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400'}`}
+                    aria-label={track.index === trainingTrackIndex ? 'Silent while you sing this part' : 'Mute'}
+                    aria-pressed={track.muted || track.index === trainingTrackIndex}
                   >
                     M
                   </button>
                   <button
                     onClick={() => onToggleSolo(track.index)}
-                    className={`${btn} text-xs font-bold ${track.solo ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400'}`}
+                    disabled={track.index === trainingTrackIndex}
+                    aria-pressed={track.solo && track.index !== trainingTrackIndex}
+                    className={`${btn} text-xs font-bold ${track.solo && track.index !== trainingTrackIndex ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400'}`}
                     aria-label="Solo"
                   >
                     S

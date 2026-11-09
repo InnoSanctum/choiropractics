@@ -25,6 +25,14 @@ It visualizes pitch in real time on an interactive piano-roll note grid with **1
   - **Customizable Track Colors**: Default color palette (Cream, Orange, Amber, Sand, Royal Blue, Emerald Green) plus an integrated hex color picker for every track.
   - **Click-to-Seek Scrubbing**: Scrub anywhere on the canvas timeline with sample-accurate audio sync.
 
+### Training mode
+
+Upload the voice parts, choose **Training**, and select **Sing this part** (or star a track). That part stays silent while its melody remains visible. The other loaded tracks play together using their mute, solo, and volume settings. The silent part's mute/solo controls are temporarily disabled; its earlier settings return when you leave Training.
+
+Press Play and allow microphone access, then sing the selected part. The live pitch trail, cents gauge, and rolling accuracy score compare your voice with that part's original melody. Harmony transposition is suspended in Training; the existing any-octave option still applies. Accuracy counts voiced singing against voiced reference notes during playback; pauses, count-in, and reference rests do not add scored frames. Use headphones so the microphone hears your voice clearly.
+
+MuseScore import is planned in [the import plan](docs/musescore-import-plan.md), including ranked splitting of divisi parts and generated “aaah” audio. It is not implemented yet.
+
 ### 3. Dominant Vocal Tone Extraction (Full-Band / Polyphony Filter)
 - When rehearsing with polyphonic audio, chords, or full-band accompaniment, our multi-stage pre-filtering pipeline isolates the lead singer's fundamental pitch:
   - **4th-Order Butterworth Vocal Bandpass Filter** ($80\text{ Hz} - 1100\text{ Hz}$).

@@ -36,8 +36,8 @@ export interface TopBarProps {
   enharmonic: 'sharp' | 'flat';
   onToggleEnharmonic: () => void;
 
-  appMode: 'practice' | 'tuner';
-  onSetAppMode: (mode: 'practice' | 'tuner') => void;
+  appMode: 'practice' | 'training' | 'tuner';
+  onSetAppMode: (mode: 'practice' | 'training' | 'tuner') => void;
 
   keepTakes: boolean;
   onToggleKeepTakes: () => void;
@@ -187,6 +187,14 @@ export const TopBar: React.FC<TopBarProps> = ({
             title="Sing along with the uploaded tracks"
           >
             Practice
+          </button>
+          <button
+            onClick={() => onSetAppMode('training')}
+            aria-pressed={appMode === 'training'}
+            className={`px-2 py-1 rounded transition ${appMode === 'training' ? 'bg-cyan-900 text-cyan-200 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            title="Sing the silent reference part with the other voices"
+          >
+            Training
           </button>
           <button
             onClick={() => onSetAppMode('tuner')}

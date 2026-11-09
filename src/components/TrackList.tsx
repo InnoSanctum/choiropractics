@@ -4,6 +4,7 @@ import { AudioTrackState } from '../audio/MultiTrackMixer';
 
 export interface TrackListProps {
   tracks: AudioTrackState[];
+  trainingTrackIndex?: number | null;
   onUploadFile: (index: number, file: File) => void;
   onToggleMute: (index: number) => void;
   onToggleSolo: (index: number) => void;
@@ -20,6 +21,7 @@ export interface TrackListProps {
 /** Desktop track list: one compact line per track, 3 per row on wide screens. */
 export const TrackList: React.FC<TrackListProps> = ({
   tracks,
+  trainingTrackIndex = null,
   onUploadFile,
   onToggleMute,
   onToggleSolo,
@@ -121,6 +123,7 @@ export const TrackList: React.FC<TrackListProps> = ({
               ) : (
                 <>
                   <span className="flex-1 min-w-0 truncate text-slate-200 font-semibold" title={track.name}>
+                    {track.index === trainingTrackIndex && <span className="text-indigo-300 mr-1">Sing · silent</span>}
                     {track.name}
                     <span className="font-normal text-slate-500 font-mono ml-1.5">{track.duration.toFixed(1)}s</span>
                   </span>
@@ -129,25 +132,30 @@ export const TrackList: React.FC<TrackListProps> = ({
                     className={`w-6 h-6 shrink-0 rounded flex items-center justify-center transition ${
                       track.isMain ? 'text-amber-400 bg-amber-400/20' : 'text-slate-500 hover:text-slate-300'
                     }`}
-                    title={track.isMain ? 'Reference track for coaching' : 'Use as reference track'}
+                    aria-pressed={track.isMain}
+                    title={track.index === trainingTrackIndex ? 'Your training part (silent)' : 'Use as reference track'}
                   >
                     <Star className="w-3.5 h-3.5 fill-current" />
                   </button>
                   <button
                     onClick={() => onToggleMute(track.index)}
+                    disabled={track.index === trainingTrackIndex}
+                    aria-pressed={track.muted || track.index === trainingTrackIndex}
                     className={`w-6 h-6 shrink-0 rounded text-[10px] font-bold transition ${
-                      track.muted ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      track.muted || track.index === trainingTrackIndex ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
-                    title={track.muted ? 'Unmute' : 'Mute'}
+                    title={track.index === trainingTrackIndex ? 'Silent while you sing this part' : track.muted ? 'Unmute' : 'Mute'}
                   >
                     M
                   </button>
                   <button
                     onClick={() => onToggleSolo(track.index)}
+                    disabled={track.index === trainingTrackIndex}
+                    aria-pressed={track.solo && track.index !== trainingTrackIndex}
                     className={`w-6 h-6 shrink-0 rounded text-[10px] font-bold transition ${
-                      track.solo ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      track.solo && track.index !== trainingTrackIndex ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
-                    title={track.solo ? 'Solo on' : 'Solo'}
+                    title={track.index === trainingTrackIndex ? 'Solo is ignored for the silent training part' : track.solo ? 'Solo on' : 'Solo'}
                   >
                     S
                   </button>

@@ -7,6 +7,7 @@ import { VisualizerCanvas, VisualizerCanvasProps } from './components/Visualizer
 import { TimelineScrollbar, TimelineScrollbarProps } from './components/TimelineScrollbar';
 import { PracticePanel, PracticePanelProps, CountInMode } from './components/PracticePanel';
 import { TunerPanel, TunerPanelProps } from './components/TunerPanel';
+import { TrainingPanel, TrainingPanelProps } from './components/TrainingPanel';
 import { CanvasOverlays } from './components/CanvasOverlays';
 import { ReviewControls, ReviewControlsProps, MISTAKE_LEVELS } from './components/ReviewControls';
 import { exportDiagram, saveFile, ExportFormat, ExportRange } from './visualizer/DiagramExport';
@@ -54,7 +55,7 @@ const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', '
 const midiName = (midi: number, enharmonic: 'sharp' | 'flat') =>
   `${(enharmonic === 'flat' ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP)[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
 
-type AppMode = 'practice' | 'tuner';
+type AppMode = TopBarProps['appMode'];
 
 export function App() {
   const isMobile = useIsMobile();
@@ -85,7 +86,7 @@ export function App() {
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
 
-  // App mode: practice with tracks, or free tuner
+  // App mode: sing along, sing a silent part, or free tuner
   const [appMode, setAppMode] = useState<AppMode>('practice');
   const appModeRef = useRef(appMode);
   appModeRef.current = appMode;
@@ -111,6 +112,7 @@ export function App() {
   // Playback speed (pitch preserved)
   const [speed, setSpeed] = useState(1);
   const [speedProgress, setSpeedProgress] = useState<number | null>(null);
+  const preparingPlaybackRef = useRef(false);
 
   // Metronome & count-in
   const [metronomeOn, setMetronomeOn] = useState(false);
@@ -240,10 +242,28 @@ export function App() {
 
   // Current Main reference track
   const mainTrack = useMemo(() => {
-    return tracks.find(t => t.isMain && t.audioBuffer) || null;
+    return tracks.find(t => t.isMain && t.audioBuffer) || tracks.find(t => t.audioBuffer) || null;
   }, [tracks]);
   const mainTrackRef = useRef(mainTrack);
   mainTrackRef.current = mainTrack;
+
+  // Keep the starred reference valid after upload, restore, or removal.
+  useEffect(() => {
+    if (mainTrack && (!mainTrack.isMain || tracks.filter(t => t.isMain).length !== 1)) {
+      setTracks(prev => prev.map(t => ({ ...t, isMain: t.index === mainTrack.index })));
+    }
+  }, [tracks, mainTrack]);
+
+  const resetCoaching = useCallback(() => {
+    comparatorRef.current.resetScore();
+    forceNewTakeRef.current = true;
+    setCoachingFeedback({
+      status: 'idle', centsDiff: 0, suggestion: 'Press Play and sing the selected part',
+      targetNote: '—', micNote: '—', inTunePercentage: 100, targetHz: 0, micHz: 0
+    });
+  }, []);
+
+  useEffect(() => { resetCoaching(); }, [appMode, mainTrack?.index, mainTrack?.audioBuffer, resetCoaching]);
 
   /** Target pitch (reference transposed by the active interval) at a song time. */
   const getTargetAt = useCallback((time: number) => {
@@ -267,7 +287,9 @@ export function App() {
     const frame = frames[bestIdx];
     if (!frame || !frame.voiced || frame.frequency <= 0 || Math.abs(frame.timestamp - time) > 0.05) return none;
 
-    const harmonized = harmonyEngineRef.current.computeTargetPitch(frame.exactMidi, frame.frequency);
+    const harmonized = appModeRef.current === 'training'
+      ? { targetMidi: frame.exactMidi, targetHz: frame.frequency }
+      : harmonyEngineRef.current.computeTargetPitch(frame.exactMidi, frame.frequency);
     return {
       targetMidi: harmonized.targetMidi,
       targetHz: harmonized.targetHz,
@@ -389,7 +411,10 @@ export function App() {
         target = { targetMidi, targetHz, targetNoteName: PraatPitchEngine.frequencyToNote(targetHz, enharmonicRef.current).noteName };
       }
     }
-    setCoachingFeedback(comparatorRef.current.compare(frame, target.targetMidi, target.targetHz, target.targetNoteName));
+    setCoachingFeedback(comparatorRef.current.compare(
+      frame, target.targetMidi, target.targetHz, target.targetNoteName,
+      appModeRef.current !== 'training' || running
+    ));
   };
 
   // Initialize MultiTrackMixer
@@ -479,9 +504,10 @@ export function App() {
   useEffect(() => {
     if (mixerRef.current) {
       mixerRef.current.initTrackChannels(6);
+      mixerRef.current.trainingTrackIndex = appMode === 'training' ? mainTrack?.index ?? null : null;
       mixerRef.current.updateGainMatrix(tracks);
     }
-  }, [tracks]);
+  }, [tracks, appMode, mainTrack?.index]);
 
   // Metronome / count-in settings -> mixer
   const countInBeats = countInMode === 'off' ? 0
@@ -586,7 +612,7 @@ export function App() {
 
   const handlePlayPause = async () => {
     const mixer = mixerRef.current;
-    if (!mixer) return;
+    if (!mixer || appModeRef.current === 'tuner') return;
     mixer.getAudioContext(); // resume within the user gesture (iOS)
 
     if (mixer.isPlaying) {
@@ -595,13 +621,30 @@ export function App() {
       setCountInLeft(0);
       return;
     }
-    if (speedProgress !== null) return; // still preparing
-    await ensureSpeedPrepared(speed);
-    mixer.playbackRate = speed;
-    const start = currentTimeRef.current >= durationRef.current - 0.05 ? 0 : currentTimeRef.current;
-    mixer.playAll(tracksRef.current, start, true);
-    setIsPlaying(mixer.isPlaying);
-    setAutoFollow(true);
+    if (speedProgress !== null || preparingPlaybackRef.current) return;
+    const startingMode = appModeRef.current;
+    preparingPlaybackRef.current = true;
+    try {
+      if (startingMode === 'training') {
+        const target = mainTrackRef.current;
+        if (!target || target.isAnalyzing || !target.pitchFrames.some(f => f.voiced)) return;
+        if (!mixer.isMicActive && !await startMic()) {
+          alert('Training needs microphone access. Enable the microphone in your browser and try again.');
+          return;
+        }
+        if (currentTimeRef.current >= durationRef.current - 0.05 || currentTimeRef.current === 0) resetCoaching();
+      }
+      await ensureSpeedPrepared(speed);
+      // Mode may change while permission or time stretching is pending.
+      if (appModeRef.current !== startingMode) return;
+      mixer.playbackRate = speed;
+      const start = currentTimeRef.current >= durationRef.current - 0.05 ? 0 : currentTimeRef.current;
+      mixer.playAll(tracksRef.current, start, true);
+      setIsPlaying(mixer.isPlaying);
+      setAutoFollow(true);
+    } finally {
+      preparingPlaybackRef.current = false;
+    }
   };
   const playPauseRef = useRef<() => void>(() => {});
   playPauseRef.current = handlePlayPause;
@@ -614,6 +657,7 @@ export function App() {
     setIsPlaying(false);
     setCountInLeft(0);
     setCurrentTime(0);
+    if (appModeRef.current === 'training') resetCoaching();
     forceNewTakeRef.current = true;
     setView(v => clampView(0, v.visible, durationRef.current));
   };
@@ -624,6 +668,7 @@ export function App() {
     if (!mixer) return;
     setCurrentTime(seekTime);
     forceNewTakeRef.current = true;
+    if (appModeRef.current === 'training') resetCoaching();
     if (mixer.isPlaying) {
       mixer.playAll(tracksRef.current, seekTime);
     } else {
@@ -723,7 +768,7 @@ export function App() {
     } else {
       setTunerClockStart(null);
       comparatorRef.current.resetScore();
-      setAppMode('practice');
+      setAppMode(mode);
     }
   };
 
@@ -874,6 +919,8 @@ export function App() {
           name: `Track ${index + 1}`,
           audioBuffer: null,
           pitchFrames: [],
+          muted: false,
+          solo: false,
           duration: 0
         };
       }
@@ -939,7 +986,7 @@ export function App() {
           isMain: true
         };
       }
-      return t;
+      return { ...t, isMain: false };
     }));
 
     setDetectedKey({
@@ -953,7 +1000,7 @@ export function App() {
 
   // Harmony target notes for the diagram: reference notes transposed by the active interval
   const harmonyNotes = useMemo<HarmonyNote[]>(() => {
-    if (!mainTrack || activeHarmonyPreset.group === 'unison') return [];
+    if (appMode === 'training' || !mainTrack || activeHarmonyPreset.group === 'unison') return [];
     const eng = new MusicalHarmonyEngine(rootIndex, activeMode);
     eng.activePreset = activeHarmonyPreset;
     eng.customSemitones = customSemitones;
@@ -963,7 +1010,7 @@ export function App() {
       endTime: s.endTime,
       midi: eng.transposeMidi(s.nearestMidi)
     }));
-  }, [mainTrack, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
+  }, [appMode, mainTrack, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
 
   // Target notes for mistake detection: reference notes, or the harmony notes when an interval is
   // active (keeping the reference's own tuning offset)
@@ -980,7 +1027,7 @@ export function App() {
   const { minMidi, maxMidi } = useMemo(() => {
     const pitches: number[] = [];
     for (const t of tracks) {
-      if (t.muted) continue;
+      if (t.muted && !(appMode === 'training' && t.index === mainTrack?.index)) continue;
       for (const f of t.pitchFrames) {
         if (f.voiced && f.exactMidi > 0) pitches.push(f.exactMidi);
       }
@@ -1000,7 +1047,7 @@ export function App() {
       hi += Math.ceil(extra / 2);
     }
     return { minMidi: lo, maxMidi: hi };
-  }, [tracks, harmonyNotes]);
+  }, [tracks, harmonyNotes, appMode, mainTrack?.index]);
 
   const currentTheme = THEMES[theme];
   // Whole-app theme (see index.css): the palette is re-mapped per theme
@@ -1009,6 +1056,11 @@ export function App() {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEMES[theme].bgPanel);
   }, [theme]);
   const isTuner = appMode === 'tuner';
+  const isTraining = appMode === 'training';
+  // Audio mute and visual visibility are independent for the training target.
+  const diagramTracks = useMemo(() => isTraining
+    ? tracks.map(t => t.index === mainTrack?.index ? { ...t, muted: false } : t)
+    : tracks, [tracks, isTraining, mainTrack?.index]);
   // The tuner take object is replaced whenever tuner mode starts (tunerClockStart changes)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tunerTakes = useMemo(() => [tunerTakeRef.current], [tunerClockStart]);
@@ -1141,8 +1193,18 @@ export function App() {
     onEnableMic: startMic
   };
 
+  const trainingProps: TrainingPanelProps = {
+    tracks,
+    targetIndex: mainTrack?.index ?? null,
+    onSelectTarget: handleSetMainTrack,
+    isMicActive,
+    onEnableMic: handleToggleMic,
+    anyOctave,
+    onToggleAnyOctave: harmonyProps.onToggleAnyOctave
+  };
+
   const visualizerProps: VisualizerCanvasProps = {
-    tracks: isTuner ? [] : tracks,
+    tracks: isTuner ? [] : diagramTracks,
     takes: isTuner ? tunerTakes : takesRef.current,
     liveClockStart: isTuner ? tunerClockStart : null,
     options: {
@@ -1184,7 +1246,8 @@ export function App() {
     const shownTracks = visualizerProps.tracks.filter(t => !t.muted && t.pitchFrames.length > 0);
     const details = [new Date().toLocaleString()];
     if (!isTuner) {
-      if (activeHarmonyPreset.group !== 'unison') details.push(activeHarmonyPreset.name);
+      if (isTraining) details.push(`Training · silent part: ${mainTrack?.name ?? 'none'}`);
+      if (!isTraining && activeHarmonyPreset.group !== 'unison') details.push(activeHarmonyPreset.name);
       if (anyOctave) details.push('any octave');
       if (speed !== 1) details.push(`speed ×${speed}`);
       if (metronomeOn) details.push(`${bpm} BPM ${beatsPerBar}/4`);
@@ -1238,7 +1301,7 @@ export function App() {
     timeOffset,
     visibleDuration,
     minVisibleDuration: MIN_VISIBLE,
-    tracks,
+    tracks: diagramTracks,
     autoFollow,
     onScrollTo: scrollTo,
     onSetView: setViewWindow,
@@ -1251,6 +1314,7 @@ export function App() {
 
   const trackListProps: TrackListProps = {
     tracks,
+    trainingTrackIndex: isTraining ? mainTrack?.index ?? null : null,
     onUploadFile: handleUploadFile,
     onToggleMute: handleToggleMute,
     onToggleSolo: handleToggleSolo,
@@ -1278,6 +1342,7 @@ export function App() {
         harmony={harmonyProps}
         practice={practiceProps}
         tuner={tunerProps}
+        training={trainingProps}
         visualizer={visualizerProps}
         timeline={timelineProps}
         trackList={trackListProps}
@@ -1298,7 +1363,7 @@ export function App() {
         <TunerPanel {...tunerProps} />
       ) : (
         <>
-          <HarmonyPanel {...harmonyProps} />
+          {isTraining ? <TrainingPanel {...trainingProps} /> : <HarmonyPanel {...harmonyProps} />}
           <PracticePanel {...practiceProps} />
         </>
       )}

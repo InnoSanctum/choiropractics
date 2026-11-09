@@ -53,7 +53,7 @@ export class PitchComparator {
   /**
    * Compares the current microphone pitch frame with the reference/target pitch.
    */
-  public compare(micFrame: PitchFrame, targetMidi: number, targetHz: number, targetNoteName: string = ''): CoachingFeedback {
+  public compare(micFrame: PitchFrame, targetMidi: number, targetHz: number, targetNoteName: string = '', recordScore: boolean = true): CoachingFeedback {
     // Both or either unvoiced
     if (!micFrame.voiced || micFrame.frequency <= 0) {
       this.smoothed = null;
@@ -123,12 +123,13 @@ export class PitchComparator {
 
     // Record score
     const isInTune = status === 'in_tune';
-    this.totalVoicedFrames++;
-    if (isInTune) this.inTuneFrames++;
-
-    this.recentScores.push(isInTune);
-    if (this.recentScores.length > this.maxHistory) {
-      this.recentScores.shift();
+    if (recordScore) {
+      this.totalVoicedFrames++;
+      if (isInTune) this.inTuneFrames++;
+      this.recentScores.push(isInTune);
+      if (this.recentScores.length > this.maxHistory) {
+        this.recentScores.shift();
+      }
     }
 
     return {

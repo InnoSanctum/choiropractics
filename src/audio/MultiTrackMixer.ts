@@ -56,6 +56,8 @@ export class MultiTrackMixer {
 
   // Playback state
   public isPlaying: boolean = false;
+  /** Silent reference part in training mode; its solo switch does not gate the backing parts. */
+  public trainingTrackIndex: number | null = null;
   private playbackStartTime: number = 0; // AudioContext time at which song time == startOffset
   private startOffset: number = 0;
   private maxDuration: number = 0;
@@ -111,6 +113,7 @@ export class MultiTrackMixer {
     for (let i = 0; i < trackCount; i++) {
       if (!this.trackNodes.has(i)) {
         const gain = ctx.createGain();
+        gain.gain.value = 0;
         gain.connect(this.masterGain);
         this.trackNodes.set(i, { gain, source: null });
       }
@@ -121,14 +124,14 @@ export class MultiTrackMixer {
    * Updates solo/mute matrix across all channels
    */
   public updateGainMatrix(tracks: AudioTrackState[]) {
-    const anySolo = tracks.some(t => t.solo);
+    const anySolo = tracks.some(t => t.audioBuffer && t.index !== this.trainingTrackIndex && t.solo);
 
     for (const track of tracks) {
       const node = this.trackNodes.get(track.index);
       if (!node) continue;
 
       let effectiveGain = track.volume;
-      if (track.muted) {
+      if (!track.audioBuffer || track.muted || track.index === this.trainingTrackIndex) {
         effectiveGain = 0;
       } else if (anySolo) {
         effectiveGain = track.solo ? track.volume : 0;
@@ -136,7 +139,13 @@ export class MultiTrackMixer {
 
       // Smooth ramp to avoid clicks
       const now = this.getAudioContext().currentTime;
-      node.gain.gain.setTargetAtTime(effectiveGain, now, 0.02);
+      node.gain.gain.cancelScheduledValues(now);
+      if (track.index === this.trainingTrackIndex) {
+        // Silence immediately, including when the target changes during playback.
+        node.gain.gain.setValueAtTime(0, now);
+      } else {
+        node.gain.gain.setTargetAtTime(effectiveGain, now, 0.02);
+      }
     }
   }
 
@@ -225,6 +234,7 @@ export class MultiTrackMixer {
     const beat = this.beatWallSeconds();
     const startAt = ctx.currentTime + 0.06 + countIn * beat;
     this.playbackStartTime = startAt;
+    this.updateGainMatrix(tracks);
 
     for (let k = 0; k < countIn; k++) {
       this.scheduleClick(startAt - (countIn - k) * beat, k % this.metronome.beatsPerBar === 0, true);
@@ -233,7 +243,7 @@ export class MultiTrackMixer {
     const rate = this.activeRate;
     const key = this.rateKey(rate);
     for (const track of tracks) {
-      if (!track.audioBuffer) continue;
+      if (!track.audioBuffer || this.startOffset >= track.audioBuffer.duration) continue;
       const channel = this.trackNodes.get(track.index);
       if (!channel) continue;
 
