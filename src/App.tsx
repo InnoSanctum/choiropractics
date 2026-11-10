@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { TopBar, TopBarProps } from './components/TopBar';
 import { TrackList, TrackListProps } from './components/TrackList';
 import { CoachingHUD, CoachingHUDProps } from './components/CoachingHUD';
@@ -8,6 +8,7 @@ import { TimelineScrollbar, TimelineScrollbarProps } from './components/Timeline
 import { PracticePanel, PracticePanelProps, CountInMode } from './components/PracticePanel';
 import { TunerPanel, TunerPanelProps } from './components/TunerPanel';
 import { TrainingPanel, TrainingPanelProps } from './components/TrainingPanel';
+import type { ScoreImportSettings } from './components/ScoreImportDialog';
 import { CanvasOverlays } from './components/CanvasOverlays';
 import { ReviewControls, ReviewControlsProps, MISTAKE_LEVELS } from './components/ReviewControls';
 import { exportDiagram, saveFile, ExportFormat, ExportRange } from './visualizer/DiagramExport';
@@ -15,7 +16,10 @@ import { TargetNote } from './audio/MistakeDetector';
 import { MobileLayout } from './components/mobile/MobileLayout';
 import { useIsMobile } from './hooks/useIsMobile';
 
-import { MultiTrackMixer, AudioTrackState, DEFAULT_TRACK_COLORS } from './audio/MultiTrackMixer';
+import { MultiTrackMixer, AudioTrackState } from './audio/MultiTrackMixer';
+import { emptyTrack, INITIAL_TRACKS, MAX_TRACKS, visibleDiagramTracks } from './audio/TrackState';
+import { renderScoreTrack, SCORE_SAMPLE_RATE } from './score/ScoreAudio';
+import { SCORE_VERSION, ScoreTrack } from './score/types';
 import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
 import { BatchPitchExtractor, PITCH_ANALYSIS_VERSION } from './audio/BatchPitchExtractor';
 import { PitchComparator, CoachingFeedback } from './audio/PitchComparator';
@@ -31,6 +35,8 @@ import {
 import { ThemeId, THEMES, NoteLabelMode } from './visualizer/ThemeManager';
 import { NoteGridRenderer, MicTake, HarmonyNote } from './visualizer/NoteGridRenderer';
 import { db } from './storage/db';
+
+const ScoreImportDialog = lazy(() => import('./components/ScoreImportDialog').then(m => ({ default: m.ScoreImportDialog })));
 
 // Timeline viewport limits
 const BASE_VISIBLE = 8.0;  // Seconds visible at zoom 1.0
@@ -65,26 +71,14 @@ export function App() {
   const comparatorRef = useRef<PitchComparator>(new PitchComparator());
   const harmonyEngineRef = useRef<MusicalHarmonyEngine>(new MusicalHarmonyEngine(0, 'major'));
 
-  // 6 Track States
+  // Track slots grow as needed, up to the import/playback safeguard.
   const [tracks, setTracks] = useState<AudioTrackState[]>(() =>
-    Array.from({ length: 6 }, (_, i) => ({
-      id: `track-${i}`,
-      index: i,
-      name: `Track ${i + 1}`,
-      audioBuffer: null,
-      pitchFrames: [],
-      volume: 0.85,
-      muted: false,
-      solo: false,
-      color: DEFAULT_TRACK_COLORS[i],
-      isMain: i === 0, // Default track 1 as main
-      isAnalyzing: false,
-      analysisProgress: 0,
-      duration: 0
-    }))
+    Array.from({ length: INITIAL_TRACKS }, (_, i) => emptyTrack(i))
   );
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
+  const [scoreFile, setScoreFile] = useState<File | null>(null);
+  const [isRestoring, setIsRestoring] = useState(true);
 
   // App mode: sing along, sing a silent part, or free tuner
   const [appMode, setAppMode] = useState<AppMode>('practice');
@@ -242,7 +236,7 @@ export function App() {
 
   // Current Main reference track
   const mainTrack = useMemo(() => {
-    return tracks.find(t => t.isMain && t.audioBuffer) || tracks.find(t => t.audioBuffer) || null;
+    return tracks.find(t => t.isMain && t.audioBuffer && !t.isPolyphonic) || tracks.find(t => t.audioBuffer && !t.isPolyphonic) || null;
   }, [tracks]);
   const mainTrackRef = useRef(mainTrack);
   mainTrackRef.current = mainTrack;
@@ -419,6 +413,7 @@ export function App() {
 
   // Initialize MultiTrackMixer
   useEffect(() => {
+    let cancelled = false;
     const mixer = new MultiTrackMixer();
     mixerRef.current = mixer;
     mixer.onMicFrame = (frame) => micHandlerRef.current(frame);
@@ -450,13 +445,14 @@ export function App() {
     };
 
     // Load persisted tracks from IndexedDB
-    for (let i = 0; i < 6; i++) {
+    const restoring = Array.from({ length: MAX_TRACKS }, (_, i) =>
       db.getTrack(i).then(async (stored) => {
-        if (stored && mixerRef.current) {
+        if (stored && !cancelled) {
           try {
-            const buffer = await mixerRef.current.decodeAudioFile(stored.track.audioBlob as File);
+            const buffer = await mixer.decodeAudioFile(stored.track.audioBlob as File);
+            if (cancelled) return;
             let frames = stored.frames;
-            if (stored.track.analysisVersion !== PITCH_ANALYSIS_VERSION) {
+            if (stored.track.source !== 'score' && stored.track.analysisVersion !== PITCH_ANALYSIS_VERSION) {
               // Stored with an older pitch algorithm: re-analyze and update the cache
               setTracks(prev => prev.map(t => t.index === i ? { ...t, isAnalyzing: true, analysisProgress: 0, name: stored.track.name } : t));
               frames = await BatchPitchExtractor.extractPitchFromAudioBuffer(buffer, {
@@ -464,13 +460,14 @@ export function App() {
                   setTracks(prev => prev.map(t => t.index === i ? { ...t, analysisProgress: p.percent } : t));
                 }
               });
-              await db.saveTrack(i, stored.track.name, stored.track.audioBlob, frames, stored.track.color, stored.track.volume, PITCH_ANALYSIS_VERSION);
+              await db.saveTrack(i, stored.track.name, stored.track.audioBlob, frames, stored.track.color, stored.track.volume, PITCH_ANALYSIS_VERSION, { visible: stored.track.visible });
             }
+            if (cancelled) return;
             const keyResult = MusicalHarmonyEngine.detectKeyAndMode(frames);
             if (keyResult && keyResult.confidence > 0.45) {
               setDetectedKey(prev => prev ?? keyResult);
             }
-            setTracks(prev => prev.map(t => {
+            setTracks(prev => Array.from({ length: Math.max(prev.length, i + 1) }, (_, index) => prev[index] ?? emptyTrack(index)).map(t => {
               if (t.index === i) {
                 return {
                   ...t,
@@ -480,7 +477,11 @@ export function App() {
                   isAnalyzing: false,
                   analysisProgress: 100,
                   color: stored.track.color || t.color,
-                  volume: stored.track.volume || t.volume,
+                  volume: stored.track.volume ?? t.volume,
+                  visible: stored.track.visible ?? true,
+                  source: stored.track.source ?? 'audio',
+                  scoreNotes: stored.track.scoreNotes,
+                  isPolyphonic: stored.track.isPolyphonic,
                   duration: buffer.duration
                 };
               }
@@ -491,10 +492,12 @@ export function App() {
             setTracks(prev => prev.map(t => t.index === i ? { ...t, isAnalyzing: false } : t));
           }
         }
-      });
-    }
+      }).catch(e => { if (!cancelled) console.error('Failed reading stored track:', e); })
+    );
+    Promise.all(restoring).finally(() => { if (!cancelled) setIsRestoring(false); });
 
     return () => {
+      cancelled = true;
       mixer.stopAll();
       mixer.stopMicrophone();
     };
@@ -503,7 +506,7 @@ export function App() {
   // Update Gain Matrix whenever tracks change
   useEffect(() => {
     if (mixerRef.current) {
-      mixerRef.current.initTrackChannels(6);
+      mixerRef.current.initTrackChannels(tracks.length);
       mixerRef.current.trainingTrackIndex = appMode === 'training' ? mainTrack?.index ?? null : null;
       mixerRef.current.updateGainMatrix(tracks);
     }
@@ -860,6 +863,9 @@ export function App() {
             name: file.name.replace(/\.[^/.]+$/, ''),
             audioBuffer,
             pitchFrames,
+            source: 'audio',
+            scoreNotes: undefined,
+            isPolyphonic: false,
             isAnalyzing: false,
             analysisProgress: 100,
             duration: audioBuffer.duration
@@ -881,7 +887,8 @@ export function App() {
         pitchFrames,
         currentTrack.color,
         currentTrack.volume,
-        PITCH_ANALYSIS_VERSION
+        PITCH_ANALYSIS_VERSION,
+        { visible: currentTrack.visible }
       );
     } catch (err) {
       console.error('Failed to process audio file:', err);
@@ -907,6 +914,7 @@ export function App() {
   };
 
   const handleSetMainTrack = (index: number) => {
+    if (tracksRef.current.find(t => t.index === index)?.isPolyphonic) return;
     setTracks(prev => prev.map(t => ({ ...t, isMain: t.index === index })));
     comparatorRef.current.resetScore();
   };
@@ -919,6 +927,9 @@ export function App() {
           name: `Track ${index + 1}`,
           audioBuffer: null,
           pitchFrames: [],
+          scoreNotes: undefined,
+          isPolyphonic: false,
+          source: 'audio',
           muted: false,
           solo: false,
           duration: 0
@@ -927,6 +938,58 @@ export function App() {
       return t;
     }));
     await db.clearTrack(index);
+  };
+
+  const handleToggleVisibility = (index: number) => {
+    if (appModeRef.current === 'training') return;
+    const track = tracksRef.current.find(t => t.index === index);
+    if (!track) return;
+    const visible = track.visible === false;
+    setTracks(prev => prev.map(t => t.index === index ? { ...t, visible } : t));
+    db.setVisibility(index, visible).catch(e => console.error('Could not save track visibility:', e));
+  };
+
+  const handleImportScore = async (imported: ScoreTrack[], settings: ScoreImportSettings, signal: AbortSignal, progress: (value: number) => void) => {
+    const mixer = mixerRef.current;
+    if (!mixer || isRestoring) throw new Error('Wait for the saved tracks to finish loading.');
+    const occupied = settings.replace ? 0 : tracksRef.current.filter(t => t.audioBuffer || t.isAnalyzing).length;
+    if (occupied + imported.length > MAX_TRACKS) throw new Error(`The session can contain at most ${MAX_TRACKS} tracks.`);
+    const samples = imported.reduce((n, t) => n + Math.ceil(t.duration * SCORE_SAMPLE_RATE), 0);
+    if (samples > 40_000_000) throw new Error('This score needs too much audio memory. Select fewer parts or import a shorter section.');
+    const base = settings.replace ? [] : [...tracksRef.current];
+    const generated: { state: AudioTrackState; blob: Blob }[] = [];
+    const used = new Set(base.filter(t => t.audioBuffer || t.isAnalyzing).map(t => t.index));
+    for (const [i, track] of imported.entries()) {
+      signal.throwIfAborted();
+      let index = 0;
+      while (used.has(index)) index++;
+      used.add(index);
+      const rendered = await renderScoreTrack(track, mixer.getAudioContext(), signal, fraction => progress((i + fraction) / imported.length * 0.95));
+      generated.push({ state: { ...emptyTrack(index), name: track.name, audioBuffer: rendered.audioBuffer, pitchFrames: rendered.pitchFrames,
+        scoreNotes: track.notes, isPolyphonic: track.isPolyphonic, source: 'score', duration: track.duration, isMain: false }, blob: rendered.blob });
+    }
+    signal.throwIfAborted();
+    // All selected tracks are saved together. A quota/storage failure leaves the rehearsal intact.
+    await db.transaction('rw', db.tracks, async () => {
+      if (settings.replace) await db.tracks.clear();
+      for (const { state, blob } of generated) {
+        signal.throwIfAborted();
+        await db.saveTrack(state.index, `${state.name}.wav`, blob, state.pitchFrames, state.color, state.volume, undefined,
+          { source: 'score', scoreVersion: SCORE_VERSION, scoreNotes: state.scoreNotes, isPolyphonic: state.isPolyphonic, visible: true });
+      }
+      signal.throwIfAborted();
+    });
+    // After the transaction commits, finish applying it even if Cancel was clicked at that instant.
+    mixer.stopAll(); setIsPlaying(false); setCurrentTime(0); setCountInLeft(0);
+    const count = Math.max(INITIAL_TRACKS, ...generated.map(t => t.state.index + 1), base.length);
+    const next = Array.from({ length: count }, (_, i) => generated.find(t => t.state.index === i)?.state ?? base[i] ?? emptyTrack(i));
+    const reference = next.find(t => t.isMain && t.audioBuffer && !t.isPolyphonic) ?? next.find(t => t.audioBuffer && !t.isPolyphonic);
+    setTracks(next.map(t => ({ ...t, isMain: t.index === reference?.index })));
+    clearTakes(); resetCoaching();
+    tempoTouchedRef.current = true;
+    setBpm(settings.bpm); setBeatsPerBar(settings.beatsPerBar); setFirstBeat(0); setTempoStatus('Tempo from imported score');
+    setView({ offset: 0, visible: BASE_VISIBLE });
+    progress(1);
   };
 
   const handleApplyDetectedKey = () => {
@@ -982,6 +1045,9 @@ export function App() {
           name: 'Demo Reference Melody',
           audioBuffer: buffer,
           pitchFrames: frames,
+          source: 'audio',
+          scoreNotes: undefined,
+          isPolyphonic: false,
           duration,
           isMain: true
         };
@@ -1005,7 +1071,9 @@ export function App() {
     eng.activePreset = activeHarmonyPreset;
     eng.customSemitones = customSemitones;
     if (activeHarmonyPreset.id === 'custom_chromatic' && customSemitones === 0) return [];
-    return NoteGridRenderer.getSegments(mainTrack.pitchFrames).map(s => ({
+    const segments = mainTrack.scoreNotes?.map(n => ({ startTime: n.start, endTime: n.end, nearestMidi: Math.round(n.midi) }))
+      ?? NoteGridRenderer.getSegments(mainTrack.pitchFrames);
+    return segments.map(s => ({
       startTime: s.startTime,
       endTime: s.endTime,
       midi: eng.transposeMidi(s.nearestMidi)
@@ -1016,7 +1084,8 @@ export function App() {
   // active (keeping the reference's own tuning offset)
   const targetNotes = useMemo<TargetNote[]>(() => {
     if (!mainTrack) return [];
-    const segs = NoteGridRenderer.getSegments(mainTrack.pitchFrames);
+    const segs = mainTrack.scoreNotes?.map(n => ({ startTime: n.start, endTime: n.end, medianMidi: n.midi, nearestMidi: Math.round(n.midi) }))
+      ?? NoteGridRenderer.getSegments(mainTrack.pitchFrames);
     if (harmonyNotes.length === segs.length && harmonyNotes.length > 0) {
       return segs.map((s, i) => ({ startTime: s.startTime, endTime: s.endTime, midi: harmonyNotes[i].midi + (s.medianMidi - s.nearestMidi) }));
     }
@@ -1026,8 +1095,8 @@ export function App() {
   // Note range on the grid: fit to the pitches of the loaded tracks and harmony (default A2..F5)
   const { minMidi, maxMidi } = useMemo(() => {
     const pitches: number[] = [];
-    for (const t of tracks) {
-      if (t.muted && !(appMode === 'training' && t.index === mainTrack?.index)) continue;
+    for (const t of visibleDiagramTracks(tracks, appMode === 'training', mainTrack?.index ?? null)) {
+      if (t.scoreNotes) for (const n of t.scoreNotes) pitches.push(n.midi);
       for (const f of t.pitchFrames) {
         if (f.voiced && f.exactMidi > 0) pitches.push(f.exactMidi);
       }
@@ -1058,9 +1127,7 @@ export function App() {
   const isTuner = appMode === 'tuner';
   const isTraining = appMode === 'training';
   // Audio mute and visual visibility are independent for the training target.
-  const diagramTracks = useMemo(() => isTraining
-    ? tracks.map(t => t.index === mainTrack?.index ? { ...t, muted: false } : t)
-    : tracks, [tracks, isTraining, mainTrack?.index]);
+  const diagramTracks = useMemo(() => visibleDiagramTracks(tracks, isTraining, mainTrack?.index ?? null), [tracks, isTraining, mainTrack?.index]);
   // The tuner take object is replaced whenever tuner mode starts (tunerClockStart changes)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tunerTakes = useMemo(() => [tunerTakeRef.current], [tunerClockStart]);
@@ -1243,7 +1310,7 @@ export function App() {
     if (song) options = { ...options, hidePlayhead: true };
 
     const takes = visualizerProps.takes.filter(t => t.frames.length > 0);
-    const shownTracks = visualizerProps.tracks.filter(t => !t.muted && t.pitchFrames.length > 0);
+    const shownTracks = visualizerProps.tracks.filter(t => t.pitchFrames.length > 0 || t.scoreNotes?.length);
     const details = [new Date().toLocaleString()];
     if (!isTuner) {
       if (isTraining) details.push(`Training · silent part: ${mainTrack?.name ?? 'none'}`);
@@ -1315,6 +1382,11 @@ export function App() {
   const trackListProps: TrackListProps = {
     tracks,
     trainingTrackIndex: isTraining ? mainTrack?.index ?? null : null,
+    trainingMode: isTraining,
+    onToggleVisibility: handleToggleVisibility,
+    onAddTrack: () => setTracks(prev => prev.length >= MAX_TRACKS ? prev : [...prev, emptyTrack(prev.length)]),
+    onImportScore: setScoreFile,
+    importDisabled: isRestoring || tracks.some(t => t.isAnalyzing),
     onUploadFile: handleUploadFile,
     onToggleMute: handleToggleMute,
     onToggleSolo: handleToggleSolo,
@@ -1333,9 +1405,13 @@ export function App() {
     showWelcome: !isTuner && !tracks.some(t => t.audioBuffer),
     onLoadDemo: handleLoadDemo
   };
+  const importDialog = scoreFile && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center">Opening score importer…</div>}>
+    <ScoreImportDialog file={scoreFile} loadedCount={tracks.filter(t => t.audioBuffer).length}
+      onClose={() => setScoreFile(null)} onImport={handleImportScore} />
+  </Suspense>;
 
   if (isMobile) {
-    return (
+    return (<>
       <MobileLayout
         topBar={topBarProps}
         hud={hudProps}
@@ -1349,7 +1425,8 @@ export function App() {
         overlays={overlayProps}
         review={reviewProps}
       />
-    );
+      {importDialog}
+    </>);
   }
 
   return (
@@ -1371,14 +1448,15 @@ export function App() {
       {/* Main Pitch Visualizer Canvas */}
       <div className="flex-1 min-h-0 relative flex flex-col">
         <VisualizerCanvas {...visualizerProps} />
-        <CanvasOverlays {...overlayProps} uploadHint="into the 6 track slots below" />
+        <CanvasOverlays {...overlayProps} uploadHint="into the track slots below, or import a MuseScore score" />
       </div>
 
       {/* Song timeline: scrollbar, overview, zoom */}
       {!isTuner && <TimelineScrollbar {...timelineProps} />}
 
-      {/* Bottom: 6 Audio Tracks Management & Filter Matrix */}
+      {/* Audio tracks, score import, and mixer controls */}
       <TrackList {...trackListProps} />
+      {importDialog}
     </div>
   );
 }

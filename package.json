@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/audio.test.mjs",
+    "test": "node --test tests/audio.test.mjs tests/score.test.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.5",
     "dexie": "^4.0.10",
+    "fast-xml-parser": "^5.12.0",
+    "fflate": "^0.8.3",
     "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

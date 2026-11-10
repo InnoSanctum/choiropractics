@@ -58,10 +58,12 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
 
   // Minimap of all note segments (memoized: only rebuilt when tracks or the time scale change)
   const minimap = useMemo(() => {
-    const visibleTracks = tracks.filter(t => !t.muted && t.pitchFrames.length > 0);
+    const visibleTracks = tracks.filter(t => t.visible !== false && (t.pitchFrames.length > 0 || t.scoreNotes?.length));
     if (visibleTracks.length === 0) return null;
 
-    const all = visibleTracks.map(t => ({ track: t, segments: NoteGridRenderer.getSegments(t.pitchFrames) }));
+    const all = visibleTracks.map(t => ({ track: t, segments: t.scoreNotes
+      ? t.scoreNotes.map(n => ({ id: n.id, startTime: n.start, endTime: n.end, medianMidi: n.midi }))
+      : NoteGridRenderer.getSegments(t.pitchFrames) }));
     let lo = Infinity;
     let hi = -Infinity;
     for (const { segments } of all) {

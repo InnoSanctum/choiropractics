@@ -127,7 +127,10 @@ export class NoteGridRenderer {
     ctx.clip();
 
     for (const track of tracks) {
-      if (track.pitchFrames && track.pitchFrames.length > 0 && !track.muted) {
+      if (track.visible === false) continue;
+      if (track.scoreNotes) {
+        this.renderScoreNotes(ctx, track, options, timeToX, midiToY, plotHeight, midiRange);
+      } else if (track.pitchFrames && track.pitchFrames.length > 0) {
         this.renderTrackPills(ctx, track.pitchFrames, NoteGridRenderer.readable(track.color, theme.bgMain), options, timeToX, midiToY, plotHeight, midiRange);
       }
     }
@@ -222,6 +225,27 @@ export class NoteGridRenderer {
   /**
    * Draws harmony target notes as dashed outline bars.
    */
+  private renderScoreNotes(
+    ctx: CanvasRenderingContext2D, track: AudioTrackState, options: RendererOptions,
+    timeToX: (t: number) => number, midiToY: (m: number) => number, height: number, midiRange: number
+  ) {
+    const color = NoteGridRenderer.readable(track.color, options.theme.bgMain);
+    const h = Math.max(5, Math.min(height / midiRange * 0.65, 15));
+    ctx.save();
+    for (const n of track.scoreNotes!) {
+      if (n.end < options.timeOffset || n.start > options.timeOffset + options.visibleDuration) continue;
+      const x = timeToX(n.start), width = Math.max(2, timeToX(n.end) - x - 1), y = midiToY(n.midi);
+      ctx.fillStyle = color; ctx.strokeStyle = color; ctx.globalAlpha = 0.22;
+      ctx.beginPath(); ctx.roundRect(x, y - h / 2, width, h, Math.min(4, width / 2)); ctx.fill();
+      ctx.globalAlpha = 0.95; ctx.lineWidth = track.isMain ? 2 : 1; ctx.stroke();
+      if (width > 24) {
+        ctx.font = '600 10px "JetBrains Mono", monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        ctx.fillText(NoteGridRenderer.midiName(Math.round(n.midi), options.enharmonic), x + 2, y - h / 2 - 2);
+      }
+    }
+    ctx.restore();
+  }
+
   private renderHarmonyNotes(
     ctx: CanvasRenderingContext2D,
     options: RendererOptions,

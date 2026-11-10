@@ -1,40 +1,46 @@
-# MuseScore import plan
+# MuseScore import
 
-Status: planned only. No score parser, importer, or generated score audio is implemented in this change.
+Implemented locally. Use **Import score** in the desktop track list or the mobile Tracks sheet. Supported native files are `.mscz` and `.mscx` from MuseScore 2, 3, and 4. This document records the current behavior and remaining format limits.
 
-## Intended result
+## Import workflow
 
-Import a MuseScore score and turn each part into one or more ordinary rehearsal tracks, with a generic “aaah” voice. Generated tracks must support the existing mixer, diagram, speed controls, training target selection, and offline restore exactly as uploaded recordings do. Each generated track is monophonic.
+1. Choose a score. The importer reads the main score from the archive manifest, or an unambiguous root MSCX file. It ignores thumbnails, extracted parts, and playback assets.
+2. Review the part names and suggested handling. Each part has a selection checkbox and a **Keep as one track / Split by pitch** selector.
+3. Set a fallback tempo if the score starts without a tempo marking; the default is 120 BPM. Explicit tempo markings and tempo changes take precedence.
+4. Choose **Add to current tracks** or **Replace current tracks**. The preview shows the generated count, resulting session count, and duration.
+5. Import. Each output becomes an ordinary rehearsal track with generated “aaah” audio and exact symbolic pitches. Progress and cancellation are available during rendering.
 
-Support `.mscz` and `.mscx`. MuseScore documents both as its native formats; `.mscz` contains compressed score data. See the official [opening and saving guide](https://handbook.musescore.org/file-management/opening-and-saving-scores) and [format documentation](https://musescore.org/en/handbook/2/file-formats). The supplied sample was also inspected directly as a ZIP archive containing XML.
+The session supports **20 loaded tracks**. The importer checks the count after splitting and includes existing tracks when appending. It never silently drops extra parts. Keep more parts together, deselect parts, or replace the session if the resulting count exceeds 20. Ordinary audio tracks can also be added up to this limit.
 
-## Verified sample
+Generated tracks are saved together in an IndexedDB transaction before the current session is changed. Parsing, rendering, cancellation, or storage failure leaves existing tracks intact. Score-derived notes and pitch frames survive restore without being re-analyzed as recordings.
 
-`D:\Downloads\forClaude.mscz` contains `forClaude.mscx`, plus styles, thumbnail, and playback/view settings. The XML reports MuseScore **4.7.5**, score format **4.70**, and **480 ticks per quarter note**.
+## Part classification
 
-It has Soprano, Alto, Tenor, and Bass parts, each on one staff, with 32 measures in 4/4. No explicit tempo mark was found. Propose 120 BPM when a score has no tempo, clearly shown and editable before import.
+Classification uses the author's names and instrument metadata before applying a polyphony heuristic:
 
-Only Soprano contains a chord: F5 and C5 on beat four of measure one. Its first two measures should become:
+- Vocal labels such as S, A, T, B, Soprano, Alto, Tenor, Bass, Baritone, Soprano 1, Soprano 2, SAB, SB, and SATB identify vocal material. Divisi is split by descending sounding pitch.
+- Explicit instrumental names or metadata keep the complete instrument part together. This includes piano, guitar, bass guitar, organ, accordion, strings, brass, and woodwind instruments. All staves of a piano part remain in the same track.
+- An unidentified part with **four or more distinct pitches sounding at once anywhere** is kept together as harmonic accompaniment.
+- An unidentified part with at most three simultaneous pitches is split by rank.
 
-| Track | M1 beat 1 | Beat 2 | Beat 3 | Beat 4 | M2 beat 1 | Beat 2 | Beat 3 | Beat 4 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Soprano 1 | F5 | F5 | G5 | F5 | G5 | F5 | A5 | rest |
-| Soprano 2 | F5 | F5 | G5 | C5 | G5 | F5 | A5 | rest |
+The preview explains the suggested choice and lets the user override it. A named vocal part can have four divisi voices; the heuristic does not override that designation. A named instrumental part stays together even if it has only two notes.
 
-Expected import: **five tracks**: Soprano 1, Soprano 2, Alto, Tenor, Bass. Preserve the shared start and all rests, including the empty trailing measures. The sample is a useful acceptance fixture; keep the original file outside the repository unless its inclusion is requested.
+SATB + Piano, SAB, SB, already separated vocal parts, and instrumental arrangements share the same pipeline. Part order and author-provided names are preserved. A monophonic part called Soprano 1 is not renamed Soprano 1 1.
 
-## Splitting a part
+## Splitting divisi
 
-1. Read the entire part before allocating tracks. Combine all its staves and notation voices on one timeline. A notation voice is not automatically an output track.
-2. Resolve note pitch to sounding MIDI pitch, including octave and instrument transposition. Do not apply octave clefs twice; specifically verify the sample's tenor against playback.
-3. Preserve note onsets, releases, ties, and rests. Partition the timeline at every onset or release so overlapping notes with different rhythms are handled, not just notes in the same `<Chord>` element.
-4. Let `N` be the maximum simultaneous pitch count anywhere in that part. Allocate `N` tracks for the whole piece, including material before the first fork. Collapse duplicate sounding pitches for this count; unison remains shared material.
-5. In each slice, sort sounding pitches from highest to lowest. Highest goes to track 1, second highest to track 2, third highest to track 3, and so on. Rank by pitch every time; do not use XML ordering or a voice-leading heuristic that could place a lower note on a higher track.
-6. If just one pitch sounds, copy it to **all N tracks**. A shared rest is silent on all tracks. Preserve the original rhythm and articulation, including repeated notes of the same pitch.
-7. Proposed policy to review before implementation: when `1 < k < N` pitches sound, assign those pitches to tracks 1 through k and leave the remaining tracks resting. A score alone may not identify which divisi singers share a note; expose this result in the preview rather than inventing additional pitches.
-8. Coalesce adjacent slices only when they represent continuation of the same held/tied source note. Repeated articulated notes must retain their attacks. If rank changes while a note is held, the sounding pitches must still occupy their required ranked tracks.
+These rules apply only to parts selected for splitting:
 
-The requested example, with the fork notes interpreted in descending pitch order:
+1. Read the entire part, combining its staves and notation voices onto one timeline. A notation voice is not automatically an output track.
+2. Use the stored sounding MIDI pitches, including their octaves. Do not apply a display clef or instrument transposition a second time.
+3. Partition at every note onset and release. This handles overlapping rhythms as well as notes written in a single chord.
+4. Let N be the maximum number of distinct simultaneous pitches in the part. Create N tracks for the entire piece, including material before the first fork.
+5. At each slice, highest pitch goes to track 1, second highest to track 2, and so on. Pitch ranking is recalculated at every change; XML note order and voice-leading preferences do not change the rank.
+6. A single shared note is copied to every derived track. Shared rests remain silent everywhere. Duplicate unison pitches do not create extra tracks.
+7. When there are between two and N−1 pitches, place them in the highest ranked lanes and leave the remaining lanes resting. The preview can keep an ambiguous part together instead.
+8. Preserve ties and sustained continuations. Repeated articulated notes of the same pitch retain separate attacks.
+
+Example, with chord notes in descending pitch order:
 
 ```text
 Source:     A B C [D,A] B [C,A]
@@ -42,51 +48,49 @@ Soprano 1:  A B C  D    B  C
 Soprano 2:  A B C  A    B  A
 ```
 
-A three-note fork anywhere makes three tracks throughout the part. All earlier and later single notes are copied to all three; each full three-note fork is sorted afresh.
+A three-note fork anywhere makes three tracks throughout the part; all single notes before and after it are copied to all three.
 
-## Implementation stages
+## Audio, diagrams, and training
 
-### 1. Parse into a symbolic timeline
+Each generated track uses a deterministic open-vowel harmonic waveform with gentle attack/release envelopes and no pitch drift or vibrato. Audio is mono PCM WAV at 22,050 Hz. Tracks share the same time origin, tempo map, complete duration, and silent spans. No installed MuseScore application, external sound font, or Muse Sounds download is needed.
 
-Add a separate `src/score/` module behind a versioned parser interface. Begin with the supplied MuseScore 4 format; add fixtures and explicit adapters before claiming compatibility with other versions.
+Retained instrumental chords are rendered polyphonically and displayed as multiple simultaneous note bars on their one track. They can accompany training. Polyphonic tracks are excluded from singing-reference selection because one microphone pitch cannot be compared to a chord unambiguously; split the part in the import preview to create selectable melody tracks.
 
-For `.mscz`, use a browser ZIP reader and select the score through `META-INF/container.xml`. Validate the declared score path; use an unambiguous root `.mscx` fallback for archives without a usable manifest. Avoid reading extracted part scores or thumbnails as the main score. For `.mscx`, parse XML directly. Bound compressed/uncompressed sizes and expansion, reject malformed XML and unsupported versions, and do not resolve external XML entities.
+Track visibility is independent of mute, solo, and volume:
 
-Normalize into part metadata, rational beat positions, sounding pitch, source-note identity, articulation, tempo changes, and meter changes. Cover dotted durations, pickup/partial measures, full-measure rests, tuplets, multiple staves/voices, and ties. Maintain independent voice cursors and interpret explicit locations rather than placing notation voices one after another.
+- In Practice, each eye button controls its diagram and timeline overview. Muting audio does not hide its diagram. Visibility choices are saved locally.
+- In Training, only the selected melody's diagram is shown. Eye buttons display that enforced state and are disabled until Practice resumes.
+- Selecting a training part that was hidden in Practice still shows it. Leaving Training restores the user's Practice visibility choices.
 
-Resolve tempo from the score's playback values, not display text. Integrate the same tempo map into seconds for every part; use the chosen fallback only when tempo is absent. Resolve dynamics into gain rather than changing pitch.
+Score note bars use exact symbolic durations, including short notes and repeated attacks. Monophonic pitch frames are generated directly at 10 ms intervals for coaching. Polyphonic parts retain their full note list without inventing a single fundamental pitch.
 
-Playback order must be explicit. Expand supported repeats/endings into one shared performance timeline before splitting and rendering. Reject unsupported jumps, repeat structures, ornaments, or grace-note timing with an actionable import message rather than silently generating the wrong rehearsal audio. Add support incrementally with fixtures.
+## Verified supplied sample
 
-### 2. Preview and split
+`D:\Downloads\forClaude.mscz` contains `forClaude.mscx`. It reports MuseScore 4.7.5, score format 4.70, and 480 ticks per quarter note.
 
-Apply the splitting rules above to the normalized timeline. Show part names, generated voice counts, duration, tempo, and target track slots before committing. Allow selecting generated tracks if they exceed the current **six-track limit**, and make replacement of occupied slots explicit. Never discard extra voices silently or partially replace the current rehearsal on a failed import.
+It has Soprano, Alto, Tenor, and Bass, each on one staff, with 32 measures in 4/4 and no explicit tempo mark. At the default 120 BPM, all generated tracks last 64 seconds, including trailing empty measures.
 
-### 3. Render a generic “aaah” voice
+The soprano interval at beat four of measure one produces:
 
-Use a deterministic browser-side harmonic oscillator with a formant envelope approximating an open vowel, a gentle attack/release, and conservative normalization. This avoids depending on installed MuseScore, Muse Sounds, or external sound fonts. No vibrato or pitch drift by default: the reference should have exact score intonation.
+| Track | M1 beat 1 | Beat 2 | Beat 3 | Beat 4 | M2 beat 1 | Beat 2 | Beat 3 | Beat 4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Soprano 1 | F5 | F5 | G5 | F5 | G5 | F5 | A5 | rest |
+| Soprano 2 | F5 | F5 | G5 | C5 | G5 | F5 | A5 | rest |
 
-Render each split voice to a mono PCM WAV `File` and an `AudioBuffer`, with identical timeline origin and duration. Include silent spans; preserve individual note attacks and tied sustains. Render in bounded chunks or a worker so longer scores do not block the interface or exhaust memory. Offer cancellation before committing.
+Expected output: **Soprano 1, Soprano 2, Alto, Tenor, Bass**. The source sample stays outside the repository.
 
-### 4. Integrate with existing tracks and storage
+## Supported timing and current limits
 
-Derive `PitchFrame[]` directly from symbolic pitch and the tempo map, using the timestamp convention and cadence expected by the existing renderer. Emit unvoiced frames for rests; use exact MIDI and frequency for notes. Do not run pitch detection on audio whose pitches are already known.
+Supported timing includes regular and pickup measures, dotted values, nested tuplets, independent notation voices, local voice offsets, ties, rests, tempo changes, and bounded simple/nested repeats. Basic MuseScore 2 direct measure events and MuseScore 3/4 voice containers have parser coverage.
 
-Populate `AudioTrackState` with the generated buffer, exact frames, name, duration, color, and default mixer settings. Save WAV blobs and frames through `db.saveTrack`, using names such as `Soprano 1.wav`. Share the final track insertion path with ordinary audio uploads without adding a score-import path to the audio decoder itself.
+Alternate endings, navigation jumps, octave lines, grace-note timing, and measure-repeat symbols are rejected with instructions to expand or rewrite them in MuseScore. Unpitched percussion is omitted with a visible preview message. Ornaments and tremolos use written pitches/durations with a preview notice; detailed performance interpretation is not synthesized. Instrument changes, expressive tempo ramps, pedal resonance, and performance articulations are not reproduced.
 
-Add a storage provenance field and version for score-derived frames. On restore, `App.tsx` currently re-analyzes frames whose `analysisVersion` differs from `PITCH_ANALYSIS_VERSION`; imported symbolic frames must bypass that audio-analysis invalidation. Migrate old records as ordinary audio tracks. Optionally retain the original score and symbolic events for later regeneration at another tempo.
+The existing metronome and beat grid use the initial imported tempo and meter. Changes of tempo/meter remain aligned in generated audio and notes, but are not yet applied to the metronome/grid. A new import sets session tempo; this metadata is not currently stored with the session.
 
-Commit all selected tracks in one IndexedDB transaction after parsing/rendering succeeds. Only then replace in-memory tracks, choose a valid reference, and refresh playback. Surface quota/cancellation errors without losing existing recordings.
+Imports have bounded file/XML sizes, note/measure counts, repeat expansion, one-hour per-track duration, and total generated audio memory. If a long arrangement exceeds the memory limit, import fewer parts or shorten it. The 20-track count is independent of these resource limits.
 
-### 5. Verify before enabling import
+## Verification
 
-- The supplied sample produces exactly the five named tracks and soprano pitches above; all files have aligned starts and equal durations.
-- The requested A/B/C example reproduces both output lines exactly, including shared notes before the first fork.
-- Reversed XML note order, repeated forks, three/four-note chords, octave-separated pitches, and all-monophonic parts retain the required pitch ranking.
-- Overlapping rhythms, ties through a fork, crossings, repeated articulated notes, explicit voice rests, and `1 < k < N` passages match the preview policy.
-- Pickups, dotted notes, tuplets, tempo/meter changes, trailing rests, and supported repeat playback keep audio and diagrams aligned across parts.
-- Unsupported notation, invalid archives/XML, cancellation, six-track overflow, occupied slots, and storage failure leave the current session intact.
-- Generated WAVs can be decoded and restored; symbolic pitch frames survive an audio pitch-analysis version change.
-- In Training mode, every generated part can be selected as the silent reference, with the other tracks honoring mute/solo/volume and scoring against the exact symbolic melody.
+Automated tests cover pitch ranking, shared material, multiple voices/staves, metadata precedence, unlabeled four-note heuristics, existing vocal numbering, SATB plus piano, 20-track overflow, ZIP selection, XML errors, tuplets, pickups, ties, simple repeats, tempo maps, WAV pitch, cancellation, and visibility restoration. The supplied MSCZ is also checked directly during local verification.
 
-No import dependencies or controls should be added until this work is approved for implementation.
+Format references: [MuseScore opening and saving guide](https://handbook.musescore.org/file-management/opening-and-saving-scores), [MuseScore file formats](https://musescore.org/en/handbook/2/file-formats), [MuseScore note pitch API](https://musescore.github.io/MuseScore_PluginAPI_Docs/plugins/html/note_8h_source.html).

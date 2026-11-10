@@ -14,7 +14,7 @@ export interface TrainingPanelProps {
 export const TrainingPanel: React.FC<TrainingPanelProps> = ({
   tracks, targetIndex, onSelectTarget, isMicActive, onEnableMic, anyOctave, onToggleAnyOctave
 }) => {
-  const loaded = tracks.filter(t => t.audioBuffer);
+  const loaded = tracks.filter(t => t.audioBuffer && !t.isPolyphonic);
   const target = loaded.find(t => t.index === targetIndex);
   return (
     <section aria-label="Training setup" className="mx-3 my-1.5 px-3 py-2 rounded-lg border border-indigo-500/40 bg-indigo-950/30 text-xs text-slate-300 flex flex-wrap items-center gap-2">
@@ -32,7 +32,7 @@ export const TrainingPanel: React.FC<TrainingPanelProps> = ({
         </select>
       </label>
       <span className="flex-1 min-w-40" role="status">
-        {!target ? 'Upload parts in Tracks to begin.'
+        {!target ? tracks.some(t => t.isPolyphonic) ? 'Choose or import a single melody for training. Chord tracks can accompany you.' : 'Upload parts in Tracks to begin.'
           : target.isAnalyzing ? 'Analyzing the selected part…'
           : target.pitchFrames.some(f => f.voiced) ? 'Your part is silent. Follow its diagram and sing with the other voices.'
           : 'No melody detected in this part. Choose another recording.'}

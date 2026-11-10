@@ -1,10 +1,16 @@
 import React, { useRef } from 'react';
-import { Upload, Star, Trash2, Filter, Loader2 } from 'lucide-react';
+import { Upload, Star, Trash2, Filter, Loader2, Eye, EyeOff, Plus } from 'lucide-react';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
+import { MAX_TRACKS } from '../score/types';
 
 export interface TrackListProps {
   tracks: AudioTrackState[];
   trainingTrackIndex?: number | null;
+  trainingMode?: boolean;
+  onToggleVisibility: (index: number) => void;
+  onAddTrack: () => void;
+  onImportScore: (file: File) => void;
+  importDisabled?: boolean;
   onUploadFile: (index: number, file: File) => void;
   onToggleMute: (index: number) => void;
   onToggleSolo: (index: number) => void;
@@ -22,6 +28,11 @@ export interface TrackListProps {
 export const TrackList: React.FC<TrackListProps> = ({
   tracks,
   trainingTrackIndex = null,
+  trainingMode = false,
+  onToggleVisibility,
+  onAddTrack,
+  onImportScore,
+  importDisabled,
   onUploadFile,
   onToggleMute,
   onToggleSolo,
@@ -35,12 +46,18 @@ export const TrackList: React.FC<TrackListProps> = ({
   onSelectVocalPreset
 }) => {
   const fileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const scoreInput = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="mx-4 my-2 flex flex-col gap-1.5">
+    <div className="mx-4 my-2 flex flex-col gap-1.5 shrink-0 max-h-[32vh] overflow-y-auto">
       {/* Header & analysis filter */}
       <div className="flex items-center justify-between text-xs px-1 text-slate-400">
-        <span className="font-bold uppercase tracking-wider text-[11px] text-slate-300">Tracks</span>
+        <div className="flex items-center gap-2">
+          <span className="font-bold uppercase tracking-wider text-[11px] text-slate-300">Tracks ({tracks.filter(t => t.audioBuffer).length}/{MAX_TRACKS})</span>
+          <button onClick={onAddTrack} disabled={tracks.length >= MAX_TRACKS} className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 disabled:opacity-40" title="Add an audio track"><Plus className="w-3.5 h-3.5" />Track</button>
+          <button onClick={() => scoreInput.current?.click()} disabled={importDisabled} className="px-2 py-1 rounded bg-indigo-900 text-indigo-100 disabled:opacity-40">Import score</button>
+          <input ref={scoreInput} type="file" accept=".mscz,.mscx" aria-label="Import MuseScore file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onImportScore(f); e.target.value = ''; }} />
+        </div>
 
         <div className="flex items-center gap-2 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
           <Filter className="w-3.5 h-3.5 text-cyan-400" />
@@ -129,13 +146,22 @@ export const TrackList: React.FC<TrackListProps> = ({
                   </span>
                   <button
                     onClick={() => onSetMainTrack(track.index)}
+                    disabled={track.isPolyphonic}
                     className={`w-6 h-6 shrink-0 rounded flex items-center justify-center transition ${
                       track.isMain ? 'text-amber-400 bg-amber-400/20' : 'text-slate-500 hover:text-slate-300'
                     }`}
                     aria-pressed={track.isMain}
-                    title={track.index === trainingTrackIndex ? 'Your training part (silent)' : 'Use as reference track'}
+                    title={track.isPolyphonic ? 'Chord accompaniment: choose a single melody for training' : track.index === trainingTrackIndex ? 'Your training part (silent)' : 'Use as reference track'}
                   >
                     <Star className="w-3.5 h-3.5 fill-current" />
+                  </button>
+                  <button
+                    onClick={() => onToggleVisibility(track.index)} disabled={trainingMode}
+                    aria-label={`${trainingMode ? track.index === trainingTrackIndex ? 'Visible' : 'Hidden' : track.visible !== false ? 'Hide' : 'Show'} diagram for ${track.name}`}
+                    aria-pressed={trainingMode ? track.index === trainingTrackIndex : track.visible !== false}
+                    title={trainingMode ? 'Training shows only the selected part' : 'Toggle diagram visibility'}
+                    className="w-6 h-6 shrink-0 rounded flex items-center justify-center text-cyan-300 bg-slate-800 disabled:opacity-50">
+                    {(trainingMode ? track.index === trainingTrackIndex : track.visible !== false) ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                   </button>
                   <button
                     onClick={() => onToggleMute(track.index)}

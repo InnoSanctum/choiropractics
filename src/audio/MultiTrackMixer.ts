@@ -1,7 +1,7 @@
 /**
  * Multi-Track Audio Engine & Mixer
  *
- * Manages up to 6 audio tracks with simultaneous playback, Solo / Mute matrix,
+ * Manages audio tracks with simultaneous playback, Solo / Mute matrix,
  * volume controls, pitch-preserving playback speed, metronome & count-in,
  * and real-time microphone input reading.
  *
@@ -11,6 +11,7 @@
 
 import { PitchFrame, PraatPitchEngine } from './PraatPitchEngine';
 import { timeStretch } from './TimeStretch';
+import { ScoreNote } from '../score/types';
 
 export interface AudioTrackState {
   id: string;
@@ -20,6 +21,10 @@ export interface AudioTrackState {
   pitchFrames: PitchFrame[];
   volume: number;       // 0.0 to 1.0
   muted: boolean;
+  visible: boolean;
+  scoreNotes?: ScoreNote[];
+  isPolyphonic?: boolean;
+  source?: 'audio' | 'score';
   solo: boolean;
   color: string;        // Hex color for note grid curve
   isMain: boolean;      // Main reference target for pitch comparison
@@ -101,7 +106,7 @@ export class MultiTrackMixer {
   }
 
   /**
-   * Initializes gain nodes for all 6 tracks
+   * Initializes gain nodes for the current track count
    */
   public initTrackChannels(trackCount: number = 6) {
     const ctx = this.getAudioContext();

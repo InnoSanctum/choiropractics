@@ -7,6 +7,7 @@
 
 import Dexie, { Table } from 'dexie';
 import { PitchFrame } from '../audio/PraatPitchEngine';
+import { ScoreNote } from '../score/types';
 
 export interface StoredAudioTrack {
   id?: number;
@@ -15,6 +16,11 @@ export interface StoredAudioTrack {
   audioBlob: Blob;
   pitchFramesJson: string; // JSON serialized PitchFrame[]
   analysisVersion?: number; // Pitch analysis algorithm version used to produce the frames
+  source?: 'audio' | 'score';
+  scoreVersion?: number;
+  scoreNotes?: ScoreNote[];
+  isPolyphonic?: boolean;
+  visible?: boolean;
   color: string;
   volume: number;
   updatedAt: Date;
@@ -37,7 +43,8 @@ export class VocalTunerDB extends Dexie {
     });
   }
 
-  public async saveTrack(index: number, name: string, audioBlob: Blob, frames: PitchFrame[], color: string, volume: number, analysisVersion?: number) {
+  public async saveTrack(index: number, name: string, audioBlob: Blob, frames: PitchFrame[], color: string, volume: number, analysisVersion?: number,
+    metadata: Pick<StoredAudioTrack, 'source' | 'scoreVersion' | 'scoreNotes' | 'isPolyphonic' | 'visible'> = {}) {
     const existing = await this.tracks.where('trackIndex').equals(index).first();
     const data: StoredAudioTrack = {
       trackIndex: index,
@@ -45,13 +52,15 @@ export class VocalTunerDB extends Dexie {
       audioBlob,
       pitchFramesJson: JSON.stringify(frames),
       analysisVersion,
+      source: 'audio',
+      ...metadata,
       color,
       volume,
       updatedAt: new Date()
     };
 
     if (existing && existing.id) {
-      await this.tracks.update(existing.id, data);
+      await this.tracks.put({ ...data, id: existing.id });
     } else {
       await this.tracks.add(data);
     }
@@ -70,6 +79,10 @@ export class VocalTunerDB extends Dexie {
 
   public async clearTrack(index: number) {
     await this.tracks.where('trackIndex').equals(index).delete();
+  }
+
+  public async setVisibility(index: number, visible: boolean) {
+    await this.tracks.where('trackIndex').equals(index).modify({ visible });
   }
 }
 

@@ -3,7 +3,7 @@
 
 Choiropractics is a high-precision, cross-platform vocal tuner, multi-part rehearsal tool, and ear-training suite designed specifically for choir singers, solo vocalists, and vocal ensembles.
 
-It visualizes pitch in real time on an interactive piano-roll note grid with **1-cent accuracy**, allows uploading up to 6 polyphonic choir parts simultaneously, offers real-time intonation coaching, and features smart diatonic harmony singing assistance.
+It visualizes pitch in real time on an interactive piano-roll note grid with **1-cent accuracy**, supports up to 20 rehearsal tracks, offers real-time intonation coaching, and features smart diatonic harmony singing assistance.
 
 ---
 
@@ -17,12 +17,13 @@ It visualizes pitch in real time on an interactive piano-roll note grid with **1
   - Smooth cubic bezier transitions connecting note bends, vibrato, and glissandos.
   - Glowing live microphone trail with real-time playhead tracking.
 
-### 2. Multi-Track Choir Rehearsal Engine (Up to 6 Tracks)
-- **Simultaneous Synchronized Playback**: Load up to 6 audio stems (Soprano, Alto, Tenor, Bass, Backing Vocals, Piano accompaniment) in MP3, WAV, AAC, FLAC, or M4A format.
+### 2. Multi-Track Choir Rehearsal Engine (Up to 20 Tracks)
+- **Simultaneous Synchronized Playback**: Load up to 20 audio stems (Soprano, Alto, Tenor, Bass, Backing Vocals, Piano accompaniment) in MP3, WAV, AAC, FLAC, or M4A format. Add track slots as needed.
 - **Console Mixer Matrix**:
   - Independent **Mute (M)** and **Solo (S)** switches.
   - Smooth volume gain sliders ($0-100\%$).
   - **Customizable Track Colors**: Default color palette (Cream, Orange, Amber, Sand, Royal Blue, Emerald Green) plus an integrated hex color picker for every track.
+  - **Independent Visibility**: Eye buttons show or hide diagrams without changing audio playback. Training displays only the selected part; Practice restores your visibility choices.
   - **Click-to-Seek Scrubbing**: Scrub anywhere on the canvas timeline with sample-accurate audio sync.
 
 ### Training mode
@@ -31,7 +32,7 @@ Upload the voice parts, choose **Training**, and select **Sing this part** (or s
 
 Press Play and allow microphone access, then sing the selected part. The live pitch trail, cents gauge, and rolling accuracy score compare your voice with that part's original melody. Harmony transposition is suspended in Training; the existing any-octave option still applies. Accuracy counts voiced singing against voiced reference notes during playback; pauses, count-in, and reference rests do not add scored frames. Use headphones so the microphone hears your voice clearly.
 
-MuseScore import is planned in [the import plan](docs/musescore-import-plan.md), including ranked splitting of divisi parts and generated “aaah” audio. It is not implemented yet.
+Use **Import score** to load MuseScore `.mscz` or `.mscx` files. Review parts, choose ranked divisi splitting or keep each part intact, and append or replace your current tracks. Vocal names and instrument metadata take priority; unlabeled parts with four or more simultaneous notes stay together. Generated “aaah” audio, exact note diagrams, and offline restore work with up to 20 tracks. See [import behavior and format limits](docs/musescore-import-plan.md).
 
 ### 3. Dominant Vocal Tone Extraction (Full-Band / Polyphony Filter)
 - When rehearsing with polyphonic audio, chords, or full-band accompaniment, our multi-stage pre-filtering pipeline isolates the lead singer's fundamental pitch:
