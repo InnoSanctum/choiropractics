@@ -34,6 +34,24 @@ Press Play and allow microphone access, then sing the selected part. The live pi
 
 Use **Import score** to load MuseScore `.mscz` or `.mscx` files. Review parts, choose ranked divisi splitting or keep each part intact, and append or replace your current tracks. Vocal names and instrument metadata take priority; unlabeled parts with four or more simultaneous notes stay together. Generated “aaah” audio, exact note diagrams, and offline restore work with up to 20 tracks. See [import behavior and format limits](docs/musescore-import-plan.md).
 
+### Choir Library
+
+Open **Library** beside the desktop tracks, or use the **Library** tab on a phone. It reads the choir's [repertoire catalogue](https://papaya-truffle-25f879.netlify.app/songs.json). Search by song, composer, or voice, choose a song, select its recordings and **Your part**, then press **Load song**. Recorded labels, including separate Soprano 1 and Soprano 2 parts, are preserved. Songs without recordings remain visible but cannot be loaded.
+
+Individual voice parts are selected by default. Full-choir and grouped-voice mixes are optional; when loaded alongside individual voices, they start muted and hidden to avoid doubling the choir. These mixed recordings can accompany practice but are excluded from single-note training targets. Scores and sheet images are not loaded.
+
+The current tracks are replaced only after every selected recording has downloaded, decoded, and been analyzed successfully. Loading shows progress and can be cancelled. The song title, recordings, labels, and pitch analysis are saved locally. Every time Library opens, it fetches the catalogue again with browser caching disabled. A saved catalogue is shown only if that request fails, so previously loaded parts can still be reopened offline using the same pitch-analysis settings. **Refresh** fetches the catalogue again; uncached recordings require an internet connection.
+
+Recordings initially use their original timing. Songs with substantially different part lengths show a notice before loading. You can align individual entrances on the diagram; Library songs remember your adjustments locally when reopened.
+
+#### Aligning part entrances
+
+Click the **horizontal arrows** button on a track to align it. Drag left or right on the diagram with a mouse or touch, or enter an exact **Start** time in seconds. Use **Snap drag to beat** for beat-sized steps, **Show start** to find the entrance, and **Reset** to return it to zero.
+
+To enter at a specific bar, set the current BPM and beats per bar, enter the **Bar**, and click **Place**. Bars count from song time zero: at 120 BPM in 4/4, bar 8 starts at 14 seconds and bar 16 at 30 seconds. For a “third time only” part, place its entrance at the time where that repeat begins; alignment does not create repeats or infer them from a score.
+
+Moving a part pauses playback. Its audio, diagram, training reference, harmony targets, overview, and exports all follow the same offset. Positive seconds delay the part; negative seconds skip the beginning of its recording. Adjustments are saved on this device, including for uploaded and imported parts.
+
 ### 3. Dominant Vocal Tone Extraction (Full-Band / Polyphony Filter)
 - When rehearsing with polyphonic audio, chords, or full-band accompaniment, our multi-stage pre-filtering pipeline isolates the lead singer's fundamental pitch:
   - **4th-Order Butterworth Vocal Bandpass Filter** ($80\text{ Hz} - 1100\text{ Hz}$).

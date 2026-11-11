@@ -8,6 +8,7 @@
 import Dexie, { Table } from 'dexie';
 import { PitchFrame } from '../audio/PraatPitchEngine';
 import { ScoreNote } from '../score/types';
+import { CachedLibraryPart } from '../library/loadSong';
 
 export interface StoredAudioTrack {
   id?: number;
@@ -21,6 +22,11 @@ export interface StoredAudioTrack {
   scoreNotes?: ScoreNote[];
   isPolyphonic?: boolean;
   visible?: boolean;
+  muted?: boolean;
+  librarySongId?: string;
+  librarySongTitle?: string;
+  libraryPartUrl?: string;
+  startOffset?: number;
   color: string;
   volume: number;
   updatedAt: Date;
@@ -34,6 +40,7 @@ export interface UserPreferences {
 export class VocalTunerDB extends Dexie {
   tracks!: Table<StoredAudioTrack, number>;
   preferences!: Table<UserPreferences, string>;
+  libraryParts!: Table<CachedLibraryPart, string>;
 
   constructor() {
     super('VocalTunerDatabase');
@@ -41,10 +48,11 @@ export class VocalTunerDB extends Dexie {
       tracks: '++id, trackIndex, name, updatedAt',
       preferences: 'key'
     });
+    this.version(2).stores({ libraryParts: 'key, updatedAt' });
   }
 
   public async saveTrack(index: number, name: string, audioBlob: Blob, frames: PitchFrame[], color: string, volume: number, analysisVersion?: number,
-    metadata: Pick<StoredAudioTrack, 'source' | 'scoreVersion' | 'scoreNotes' | 'isPolyphonic' | 'visible'> = {}) {
+    metadata: Pick<StoredAudioTrack, 'source' | 'scoreVersion' | 'scoreNotes' | 'isPolyphonic' | 'visible' | 'muted' | 'librarySongId' | 'librarySongTitle' | 'libraryPartUrl' | 'startOffset'> = {}) {
     const existing = await this.tracks.where('trackIndex').equals(index).first();
     const data: StoredAudioTrack = {
       trackIndex: index,
@@ -83,6 +91,10 @@ export class VocalTunerDB extends Dexie {
 
   public async setVisibility(index: number, visible: boolean) {
     await this.tracks.where('trackIndex').equals(index).modify({ visible });
+  }
+
+  public async setTrackOffset(index: number, startOffset: number) {
+    await this.tracks.where('trackIndex').equals(index).modify({ startOffset });
   }
 }
 

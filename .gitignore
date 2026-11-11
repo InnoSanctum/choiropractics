@@ -36,3 +36,11 @@ yarn-error.log*
 next-env.d.ts
 
 /dist
+
+# Generated local choir Library upload bundle
+/artifacts/choir-library-upload/
+
+# Audio recordings and generated stems stay on this computer
+*.[mM][pP]3
+*.[wW][aA][vV]
+*.[fF][lL][aA][cC]

@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut, Maximize2, LocateFixed } from 'lucide-react';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 import { NoteGridRenderer } from '../visualizer/NoteGridRenderer';
+import { shiftNoteTimes, trackOffset } from '../audio/TrackTiming';
 
 export interface TimelineScrollbarProps {
   duration: number;
@@ -61,9 +62,10 @@ export const TimelineScrollbar: React.FC<TimelineScrollbarProps> = ({
     const visibleTracks = tracks.filter(t => t.visible !== false && (t.pitchFrames.length > 0 || t.scoreNotes?.length));
     if (visibleTracks.length === 0) return null;
 
-    const all = visibleTracks.map(t => ({ track: t, segments: t.scoreNotes
+    const all = visibleTracks.map(t => ({ track: t, segments: shiftNoteTimes(t.scoreNotes
       ? t.scoreNotes.map(n => ({ id: n.id, startTime: n.start, endTime: n.end, medianMidi: n.midi }))
-      : NoteGridRenderer.getSegments(t.pitchFrames) }));
+      : NoteGridRenderer.getSegments(t.pitchFrames), trackOffset(t))
+      .filter(n => n.endTime > 0).map(n => ({ ...n, startTime: Math.max(0, n.startTime) })) }));
     let lo = Infinity;
     let hi = -Infinity;
     for (const { segments } of all) {

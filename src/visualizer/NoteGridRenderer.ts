@@ -10,6 +10,7 @@ import { PitchFrame } from '../audio/PraatPitchEngine';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 import { ThemeColors, NoteLabelMode } from './ThemeManager';
 import { MistakeCache, TargetNote } from '../audio/MistakeDetector';
+import { trackOffset } from '../audio/TrackTiming';
 
 export interface RendererOptions {
   theme: ThemeColors;
@@ -128,10 +129,13 @@ export class NoteGridRenderer {
 
     for (const track of tracks) {
       if (track.visible === false) continue;
+      const offset = trackOffset(track);
+      const localOptions = { ...options, timeOffset: options.timeOffset - offset };
+      const localToX = (time: number) => timeToX(time + offset);
       if (track.scoreNotes) {
-        this.renderScoreNotes(ctx, track, options, timeToX, midiToY, plotHeight, midiRange);
+        this.renderScoreNotes(ctx, track, localOptions, localToX, midiToY, plotHeight, midiRange);
       } else if (track.pitchFrames && track.pitchFrames.length > 0) {
-        this.renderTrackPills(ctx, track.pitchFrames, NoteGridRenderer.readable(track.color, theme.bgMain), options, timeToX, midiToY, plotHeight, midiRange);
+        this.renderTrackPills(ctx, track.pitchFrames, NoteGridRenderer.readable(track.color, theme.bgMain), localOptions, localToX, midiToY, plotHeight, midiRange);
       }
     }
 

@@ -1,7 +1,8 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Star, Trash2, Loader2, Filter, Volume2, Eye, EyeOff } from 'lucide-react';
+import { Upload, Star, Trash2, Loader2, Filter, Volume2, Eye, EyeOff, MoveHorizontal } from 'lucide-react';
 import { TrackListProps } from '../TrackList';
 import { MAX_TRACKS } from '../../score/types';
+import { trackOffset } from '../../audio/TrackTiming';
 
 /** Compact track list for phones: one row per track. */
 export const MobileTrackList: React.FC<TrackListProps> = ({
@@ -12,6 +13,9 @@ export const MobileTrackList: React.FC<TrackListProps> = ({
   onAddTrack,
   onImportScore,
   importDisabled,
+  librarySongTitle,
+  onAlignTrack,
+  aligningTrackIndex,
   onUploadFile,
   onToggleMute,
   onToggleSolo,
@@ -31,6 +35,7 @@ export const MobileTrackList: React.FC<TrackListProps> = ({
 
   return (
     <div className="flex flex-col gap-2">
+      {librarySongTitle && <div className="text-sm font-semibold text-cyan-200 truncate">{librarySongTitle}</div>}
       <div className="flex gap-2 items-center text-sm">
         <button onClick={onAddTrack} disabled={tracks.length >= MAX_TRACKS} className="rounded bg-slate-800 px-3 py-2 disabled:opacity-40">Add track</button>
         <button onClick={() => scoreInput.current?.click()} disabled={importDisabled} className="rounded bg-indigo-900 text-indigo-100 px-3 py-2 disabled:opacity-40">Import score</button>
@@ -87,7 +92,7 @@ export const MobileTrackList: React.FC<TrackListProps> = ({
                 <>
                   <div className="flex-1 min-w-24 leading-tight">
                     <div className="text-sm font-semibold text-slate-200 truncate">{track.name}</div>
-                    <div className="text-[10px] text-slate-400 font-mono">{track.index === trainingTrackIndex ? 'Sing · silent · ' : ''}T{track.index + 1} · {track.duration.toFixed(1)}s</div>
+                    <div className="text-[10px] text-slate-400 font-mono">{track.index === trainingTrackIndex ? 'Sing · silent · ' : ''}T{track.index + 1} · {track.duration.toFixed(1)}s{trackOffset(track) !== 0 ? ` · ${trackOffset(track) > 0 ? '+' : ''}${trackOffset(track)}s` : ''}</div>
                   </div>
                   <button
                     onClick={() => onSetMainTrack(track.index)}
@@ -105,6 +110,10 @@ export const MobileTrackList: React.FC<TrackListProps> = ({
                     title={trainingMode ? 'Training shows only the selected part' : 'Toggle diagram visibility'}
                     className={`${btn} bg-slate-800 text-cyan-300 disabled:opacity-50`}>
                     {(trainingMode ? track.index === trainingTrackIndex : track.visible !== false) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                  </button>
+                  <button onClick={() => onAlignTrack(track.index)} aria-label={`Align ${track.name}`} title="Move this part on the timeline"
+                    className={`${btn} ${aligningTrackIndex === track.index ? 'bg-cyan-700 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                    <MoveHorizontal className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => onToggleMute(track.index)}

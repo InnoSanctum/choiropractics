@@ -8,7 +8,11 @@ import { TimelineScrollbar, TimelineScrollbarProps } from './components/Timeline
 import { PracticePanel, PracticePanelProps, CountInMode } from './components/PracticePanel';
 import { TunerPanel, TunerPanelProps } from './components/TunerPanel';
 import { TrainingPanel, TrainingPanelProps } from './components/TrainingPanel';
+import { TrackAlignmentPanel, TrackAlignmentPanelProps } from './components/TrackAlignmentPanel';
 import type { ScoreImportSettings } from './components/ScoreImportDialog';
+import type { LibrarySelection } from './components/LibraryDialog';
+import type { LibrarySong } from './library/catalogue';
+import { LibraryLoadProgress, prepareLibrarySong } from './library/loadSong';
 import { CanvasOverlays } from './components/CanvasOverlays';
 import { ReviewControls, ReviewControlsProps, MISTAKE_LEVELS } from './components/ReviewControls';
 import { exportDiagram, saveFile, ExportFormat, ExportRange } from './visualizer/DiagramExport';
@@ -18,6 +22,7 @@ import { useIsMobile } from './hooks/useIsMobile';
 
 import { MultiTrackMixer, AudioTrackState } from './audio/MultiTrackMixer';
 import { emptyTrack, INITIAL_TRACKS, MAX_TRACKS, visibleDiagramTracks } from './audio/TrackState';
+import { normalizeTrackOffset, referenceFrameAt, shiftNoteTimes, songDuration, trackOffset } from './audio/TrackTiming';
 import { renderScoreTrack, SCORE_SAMPLE_RATE } from './score/ScoreAudio';
 import { SCORE_VERSION, ScoreTrack } from './score/types';
 import { PitchFrame, PraatPitchEngine } from './audio/PraatPitchEngine';
@@ -37,6 +42,7 @@ import { NoteGridRenderer, MicTake, HarmonyNote } from './visualizer/NoteGridRen
 import { db } from './storage/db';
 
 const ScoreImportDialog = lazy(() => import('./components/ScoreImportDialog').then(m => ({ default: m.ScoreImportDialog })));
+const LibraryDialog = lazy(() => import('./components/LibraryDialog').then(m => ({ default: m.LibraryDialog })));
 
 // Timeline viewport limits
 const BASE_VISIBLE = 8.0;  // Seconds visible at zoom 1.0
@@ -79,11 +85,19 @@ export function App() {
   tracksRef.current = tracks;
   const [scoreFile, setScoreFile] = useState<File | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const currentLibraryTitle = useMemo(() => {
+    const loaded = tracks.filter(t => t.audioBuffer);
+    return loaded.length && loaded[0].librarySongId && loaded.every(t => t.librarySongId === loaded[0].librarySongId)
+      ? loaded[0].librarySongTitle : undefined;
+  }, [tracks]);
 
   // App mode: sing along, sing a silent part, or free tuner
   const [appMode, setAppMode] = useState<AppMode>('practice');
   const appModeRef = useRef(appMode);
   appModeRef.current = appMode;
+  const [aligningTrackIndex, setAligningTrackIndex] = useState<number | null>(null);
+  const [alignmentSnapToBeat, setAlignmentSnapToBeat] = useState(false);
 
   // Playback & Timeline State
   const [isPlaying, setIsPlaying] = useState(false);
@@ -257,7 +271,7 @@ export function App() {
     });
   }, []);
 
-  useEffect(() => { resetCoaching(); }, [appMode, mainTrack?.index, mainTrack?.audioBuffer, resetCoaching]);
+  useEffect(() => { resetCoaching(); }, [appMode, mainTrack?.index, mainTrack?.audioBuffer, mainTrack?.startOffset, resetCoaching]);
 
   /** Target pitch (reference transposed by the active interval) at a song time. */
   const getTargetAt = useCallback((time: number) => {
@@ -265,21 +279,8 @@ export function App() {
     const none = { targetMidi: 0, targetHz: 0, targetNoteName: '—' };
     if (!track || track.pitchFrames.length === 0) return none;
 
-    const frames = track.pitchFrames;
-    let low = 0;
-    let high = frames.length - 1;
-    let bestIdx = 0;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      if (frames[mid].timestamp <= time) {
-        bestIdx = mid;
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-    const frame = frames[bestIdx];
-    if (!frame || !frame.voiced || frame.frequency <= 0 || Math.abs(frame.timestamp - time) > 0.05) return none;
+    const frame = referenceFrameAt(track, time);
+    if (!frame || !frame.voiced || frame.frequency <= 0) return none;
 
     const harmonized = appModeRef.current === 'training'
       ? { targetMidi: frame.exactMidi, targetHz: frame.frequency }
@@ -452,7 +453,7 @@ export function App() {
             const buffer = await mixer.decodeAudioFile(stored.track.audioBlob as File);
             if (cancelled) return;
             let frames = stored.frames;
-            if (stored.track.source !== 'score' && stored.track.analysisVersion !== PITCH_ANALYSIS_VERSION) {
+            if (stored.track.source !== 'score' && !stored.track.isPolyphonic && stored.track.analysisVersion !== PITCH_ANALYSIS_VERSION) {
               // Stored with an older pitch algorithm: re-analyze and update the cache
               setTracks(prev => prev.map(t => t.index === i ? { ...t, isAnalyzing: true, analysisProgress: 0, name: stored.track.name } : t));
               frames = await BatchPitchExtractor.extractPitchFromAudioBuffer(buffer, {
@@ -460,7 +461,10 @@ export function App() {
                   setTracks(prev => prev.map(t => t.index === i ? { ...t, analysisProgress: p.percent } : t));
                 }
               });
-              await db.saveTrack(i, stored.track.name, stored.track.audioBlob, frames, stored.track.color, stored.track.volume, PITCH_ANALYSIS_VERSION, { visible: stored.track.visible });
+              await db.saveTrack(i, stored.track.name, stored.track.audioBlob, frames, stored.track.color, stored.track.volume, PITCH_ANALYSIS_VERSION,
+                { visible: stored.track.visible, muted: stored.track.muted, isPolyphonic: stored.track.isPolyphonic,
+                  librarySongId: stored.track.librarySongId, librarySongTitle: stored.track.librarySongTitle, libraryPartUrl: stored.track.libraryPartUrl,
+                  startOffset: stored.track.startOffset });
             }
             if (cancelled) return;
             const keyResult = MusicalHarmonyEngine.detectKeyAndMode(frames);
@@ -480,6 +484,12 @@ export function App() {
                   volume: stored.track.volume ?? t.volume,
                   visible: stored.track.visible ?? true,
                   source: stored.track.source ?? 'audio',
+                  muted: stored.track.muted ?? false,
+                  librarySongId: stored.track.librarySongId,
+                  librarySongTitle: stored.track.librarySongTitle,
+                  libraryPartUrl: stored.track.libraryPartUrl,
+                  startOffset: normalizeTrackOffset(stored.track.startOffset ?? 0),
+                  isMain: t.isMain && !stored.track.isPolyphonic,
                   scoreNotes: stored.track.scoreNotes,
                   isPolyphonic: stored.track.isPolyphonic,
                   duration: buffer.duration
@@ -527,7 +537,7 @@ export function App() {
 
   // Compute maximum audio duration
   const maxDuration = useMemo(() => {
-    return Math.max(0, ...tracks.map(t => t.duration));
+    return songDuration(tracks);
   }, [tracks]);
   durationRef.current = maxDuration;
 
@@ -757,6 +767,7 @@ export function App() {
     if (mode === appMode) return;
     const mixer = mixerRef.current;
     if (mode === 'tuner') {
+      setAligningTrackIndex(null);
       if (mixer?.isPlaying) {
         mixer.pauseAll();
         setIsPlaying(false);
@@ -864,9 +875,13 @@ export function App() {
             audioBuffer,
             pitchFrames,
             source: 'audio',
+            startOffset: 0,
+            librarySongId: undefined,
+            librarySongTitle: undefined,
+            libraryPartUrl: undefined,
             scoreNotes: undefined,
             isPolyphonic: false,
-            isAnalyzing: false,
+            isAnalyzing: true,
             analysisProgress: 100,
             duration: audioBuffer.duration
           };
@@ -888,8 +903,9 @@ export function App() {
         currentTrack.color,
         currentTrack.volume,
         PITCH_ANALYSIS_VERSION,
-        { visible: currentTrack.visible }
+        { visible: currentTrack.visible, startOffset: 0 }
       );
+      setTracks(prev => prev.map(t => t.index === index ? { ...t, isAnalyzing: false } : t));
     } catch (err) {
       console.error('Failed to process audio file:', err);
       alert('Could not decode or analyze audio file. Please check audio format (MP3, WAV, AAC, FLAC supported).');
@@ -915,11 +931,13 @@ export function App() {
 
   const handleSetMainTrack = (index: number) => {
     if (tracksRef.current.find(t => t.index === index)?.isPolyphonic) return;
+    if (appModeRef.current === 'training' && aligningTrackIndex !== null) setAligningTrackIndex(index);
     setTracks(prev => prev.map(t => ({ ...t, isMain: t.index === index })));
     comparatorRef.current.resetScore();
   };
 
   const handleClearTrack = async (index: number) => {
+    if (aligningTrackIndex === index) setAligningTrackIndex(null);
     setTracks(prev => prev.map(t => {
       if (t.index === index) {
         return {
@@ -930,6 +948,10 @@ export function App() {
           scoreNotes: undefined,
           isPolyphonic: false,
           source: 'audio',
+          startOffset: 0,
+          librarySongId: undefined,
+          librarySongTitle: undefined,
+          libraryPartUrl: undefined,
           muted: false,
           solo: false,
           duration: 0
@@ -947,6 +969,45 @@ export function App() {
     const visible = track.visible === false;
     setTracks(prev => prev.map(t => t.index === index ? { ...t, visible } : t));
     db.setVisibility(index, visible).catch(e => console.error('Could not save track visibility:', e));
+  };
+
+  const handleStartAlignment = (index: number) => {
+    const track = tracksRef.current.find(t => t.index === index && t.audioBuffer);
+    if (!track) return;
+    if (appModeRef.current === 'tuner' || (appModeRef.current === 'training' && index !== mainTrackRef.current?.index)) handleSetAppMode('practice');
+    setAligningTrackIndex(index);
+  };
+
+  const handleChangeTrackOffset = (index: number, value: number, commit: boolean) => {
+    const current = tracksRef.current.find(t => t.index === index && t.audioBuffer);
+    if (!current) return;
+    const offset = normalizeTrackOffset(value);
+    if (trackOffset(current) !== offset) {
+      const mixer = mixerRef.current;
+      const position = mixer?.isPlaying ? mixer.pauseAll() : mixer?.getCurrentTime() ?? currentTimeRef.current;
+      setIsPlaying(false); setCountInLeft(0); setAutoFollow(false);
+      const next = tracksRef.current.map(t => t.index === index ? { ...t, startOffset: offset } : t);
+      tracksRef.current = next; setTracks(next);
+      const time = Math.min(position, songDuration(next));
+      mixer?.setPosition(time); currentTimeRef.current = time; setCurrentTime(time);
+      forceNewTakeRef.current = true;
+    }
+    if (commit) {
+      db.transaction('rw', db.tracks, db.preferences, async () => {
+        await db.setTrackOffset(index, offset);
+        if (current.librarySongId && current.libraryPartUrl) {
+          const key = `choiro.libraryOffsets.${current.librarySongId}`;
+          const saved = await db.preferences.get(key);
+          let offsets: Record<string, number> = {};
+          try { offsets = saved ? JSON.parse(saved.value) : {}; } catch { /* Start a fresh alignment map. */ }
+          await db.preferences.put({ key, value: JSON.stringify({ ...offsets, [current.libraryPartUrl]: offset }) });
+        }
+      }).catch(e => console.error('Could not save part alignment:', e));
+      const v = viewRef.current;
+      if (offset >= 0 && (offset < v.offset || offset > v.offset + v.visible)) {
+        setView(clampView(Math.max(0, offset - v.visible * 0.1), v.visible, songDuration(tracksRef.current)));
+      }
+    }
   };
 
   const handleImportScore = async (imported: ScoreTrack[], settings: ScoreImportSettings, signal: AbortSignal, progress: (value: number) => void) => {
@@ -981,6 +1042,7 @@ export function App() {
     });
     // After the transaction commits, finish applying it even if Cancel was clicked at that instant.
     mixer.stopAll(); setIsPlaying(false); setCurrentTime(0); setCountInLeft(0);
+    setAligningTrackIndex(null);
     const count = Math.max(INITIAL_TRACKS, ...generated.map(t => t.state.index + 1), base.length);
     const next = Array.from({ length: count }, (_, i) => generated.find(t => t.state.index === i)?.state ?? base[i] ?? emptyTrack(i));
     const reference = next.find(t => t.isMain && t.audioBuffer && !t.isPolyphonic) ?? next.find(t => t.audioBuffer && !t.isPolyphonic);
@@ -997,6 +1059,58 @@ export function App() {
       setRootIndex(detectedKey.rootIndex);
       setActiveMode(detectedKey.mode);
     }
+  };
+
+  const handleLoadLibrarySong = async (song: LibrarySong, selection: LibrarySelection, signal: AbortSignal, progress: (value: LibraryLoadProgress) => void) => {
+    const mixer = mixerRef.current;
+    if (!mixer || isRestoring) throw new Error('Wait for the saved tracks to finish loading.');
+    const prepared = await prepareLibrarySong(song, selection.partIds, {
+      analysisKey: `${PITCH_ANALYSIS_VERSION}|${enableBandpass}|${vocalPreset}`,
+      decode: blob => mixer.decodeAudioFile(blob as File),
+      analyze: (audioBuffer, part, signal, onProgress) => {
+        const preset = vocalPreset !== 'all' ? vocalPreset
+          : part.voice === 'soprano' ? 'soprano' : part.voice === 'alto' ? 'female'
+          : ['tenor', 'bass', 'baritone'].includes(part.voice) ? 'male' : 'all';
+        return BatchPitchExtractor.extractPitchFromAudioBuffer(audioBuffer, {
+          enableBandpass, vocalPreset: preset, signal, onProgress: p => onProgress(p.percent / 100)
+        });
+      },
+      getCached: key => db.libraryParts.get(key),
+      cache: record => db.libraryParts.put(record).then(() => {})
+    }, signal, progress);
+    signal.throwIfAborted();
+    progress({ fraction: 0.96, message: 'Saving rehearsal…' });
+    const targetUrl = song.parts.find(p => p.id === selection.targetPartId)?.url;
+    let offsets: Record<string, number> = {};
+    try {
+      const saved = await db.preferences.get(`choiro.libraryOffsets.${song.id}`);
+      offsets = saved ? JSON.parse(saved.value) : {};
+    } catch { /* Original timing is the fallback for new or unavailable alignments. */ }
+    signal.throwIfAborted();
+    const reference = prepared.tracks.find(t => t.audioBuffer && !t.isPolyphonic && t.libraryPartUrl === targetUrl)
+      ?? prepared.tracks.find(t => t.audioBuffer && !t.isPolyphonic);
+    const next = prepared.tracks.map(t => ({ ...t, isMain: t.index === reference?.index,
+      startOffset: normalizeTrackOffset(t.libraryPartUrl ? offsets?.[t.libraryPartUrl] ?? 0 : 0) }));
+    await db.transaction('rw', db.tracks, async () => {
+      await db.tracks.clear();
+      for (const track of next.filter(t => t.audioBuffer)) {
+        signal.throwIfAborted();
+        await db.saveTrack(track.index, track.name, prepared.blobs[track.index], track.pitchFrames, track.color, track.volume, PITCH_ANALYSIS_VERSION,
+          { source: 'audio', visible: track.visible, muted: track.muted, isPolyphonic: track.isPolyphonic,
+            librarySongId: song.id, librarySongTitle: song.title, libraryPartUrl: track.libraryPartUrl, startOffset: track.startOffset });
+      }
+      signal.throwIfAborted();
+    });
+    mixer.stopAll(); setIsPlaying(false); setCurrentTime(0); setCountInLeft(0);
+    setTracks(next); setAligningTrackIndex(null); clearTakes(); resetCoaching();
+    tempoTouchedRef.current = false; keyTouchedRef.current = false;
+    setTempoStatus(null); setDetectedKey(null); setBpm(120); setFirstBeat(0); setBeatsPerBar(4);
+    setActiveHarmonyPreset(STANDARD_HARMONY_PRESETS[0]);
+    setView({ offset: 0, visible: BASE_VISIBLE }); setAutoFollow(true);
+    if (appModeRef.current === 'tuner') await handleSetAppMode('practice');
+    const key = reference && MusicalHarmonyEngine.detectKeyAndMode(reference.pitchFrames);
+    if (key && key.confidence > 0.45) setDetectedKey(key);
+    progress({ fraction: 1, message: `${song.title} is ready` });
   };
 
   // Preset demo sound generator for immediate zero-upload testing
@@ -1046,6 +1160,10 @@ export function App() {
           audioBuffer: buffer,
           pitchFrames: frames,
           source: 'audio',
+          startOffset: 0,
+          librarySongId: undefined,
+          librarySongTitle: undefined,
+          libraryPartUrl: undefined,
           scoreNotes: undefined,
           isPolyphonic: false,
           duration,
@@ -1074,8 +1192,8 @@ export function App() {
     const segments = mainTrack.scoreNotes?.map(n => ({ startTime: n.start, endTime: n.end, nearestMidi: Math.round(n.midi) }))
       ?? NoteGridRenderer.getSegments(mainTrack.pitchFrames);
     return segments.map(s => ({
-      startTime: s.startTime,
-      endTime: s.endTime,
+      startTime: s.startTime + trackOffset(mainTrack),
+      endTime: s.endTime + trackOffset(mainTrack),
       midi: eng.transposeMidi(s.nearestMidi)
     }));
   }, [appMode, mainTrack, activeHarmonyPreset, rootIndex, activeMode, customSemitones]);
@@ -1084,8 +1202,8 @@ export function App() {
   // active (keeping the reference's own tuning offset)
   const targetNotes = useMemo<TargetNote[]>(() => {
     if (!mainTrack) return [];
-    const segs = mainTrack.scoreNotes?.map(n => ({ startTime: n.start, endTime: n.end, medianMidi: n.midi, nearestMidi: Math.round(n.midi) }))
-      ?? NoteGridRenderer.getSegments(mainTrack.pitchFrames);
+    const segs = shiftNoteTimes(mainTrack.scoreNotes?.map(n => ({ startTime: n.start, endTime: n.end, medianMidi: n.midi, nearestMidi: Math.round(n.midi) }))
+      ?? NoteGridRenderer.getSegments(mainTrack.pitchFrames), trackOffset(mainTrack));
     if (harmonyNotes.length === segs.length && harmonyNotes.length > 0) {
       return segs.map((s, i) => ({ startTime: s.startTime, endTime: s.endTime, midi: harmonyNotes[i].midi + (s.medianMidi - s.nearestMidi) }));
     }
@@ -1095,7 +1213,7 @@ export function App() {
   // Note range on the grid: fit to the pitches of the loaded tracks and harmony (default A2..F5)
   const { minMidi, maxMidi } = useMemo(() => {
     const pitches: number[] = [];
-    for (const t of visibleDiagramTracks(tracks, appMode === 'training', mainTrack?.index ?? null)) {
+    for (const t of visibleDiagramTracks(tracks, appMode === 'training', mainTrack?.index ?? null, aligningTrackIndex)) {
       if (t.scoreNotes) for (const n of t.scoreNotes) pitches.push(n.midi);
       for (const f of t.pitchFrames) {
         if (f.voiced && f.exactMidi > 0) pitches.push(f.exactMidi);
@@ -1116,7 +1234,7 @@ export function App() {
       hi += Math.ceil(extra / 2);
     }
     return { minMidi: lo, maxMidi: hi };
-  }, [tracks, harmonyNotes, appMode, mainTrack?.index]);
+  }, [tracks, harmonyNotes, appMode, mainTrack?.index, aligningTrackIndex]);
 
   const currentTheme = THEMES[theme];
   // Whole-app theme (see index.css): the palette is re-mapped per theme
@@ -1127,7 +1245,7 @@ export function App() {
   const isTuner = appMode === 'tuner';
   const isTraining = appMode === 'training';
   // Audio mute and visual visibility are independent for the training target.
-  const diagramTracks = useMemo(() => visibleDiagramTracks(tracks, isTraining, mainTrack?.index ?? null), [tracks, isTraining, mainTrack?.index]);
+  const diagramTracks = useMemo(() => visibleDiagramTracks(tracks, isTraining, mainTrack?.index ?? null, aligningTrackIndex), [tracks, isTraining, mainTrack?.index, aligningTrackIndex]);
   // The tuner take object is replaced whenever tuner mode starts (tunerClockStart changes)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tunerTakes = useMemo(() => [tunerTakeRef.current], [tunerClockStart]);
@@ -1293,7 +1411,10 @@ export function App() {
     },
     onSeek: handleSeek,
     onScrollBy: scrollBy,
-    onZoomAt: zoomAt
+    onZoomAt: zoomAt,
+    aligningTrackIndex: isTuner ? null : aligningTrackIndex,
+    onMoveTrack: handleChangeTrackOffset,
+    moveSnapSeconds: alignmentSnapToBeat ? 60 / bpm : 0
   };
 
   // ---- Export (same renderer and settings as on screen) ----
@@ -1381,6 +1502,10 @@ export function App() {
 
   const trackListProps: TrackListProps = {
     tracks,
+    onAlignTrack: handleStartAlignment,
+    aligningTrackIndex,
+    librarySongTitle: currentLibraryTitle,
+    onOpenLibrary: () => { mixerRef.current?.getAudioContext(); setLibraryOpen(true); },
     trainingTrackIndex: isTraining ? mainTrack?.index ?? null : null,
     trainingMode: isTraining,
     onToggleVisibility: handleToggleVisibility,
@@ -1405,9 +1530,21 @@ export function App() {
     showWelcome: !isTuner && !tracks.some(t => t.audioBuffer),
     onLoadDemo: handleLoadDemo
   };
+  const alignmentProps: TrackAlignmentPanelProps = {
+    tracks, trackIndex: isTuner ? null : aligningTrackIndex, onSelectTrack: handleStartAlignment,
+    onChangeOffset: handleChangeTrackOffset, onDone: () => setAligningTrackIndex(null),
+    onShowStart: () => {
+      const track = tracksRef.current.find(t => t.index === aligningTrackIndex);
+      if (track) scrollTo(Math.max(0, trackOffset(track) - viewRef.current.visible * 0.1));
+    },
+    bpm, beatsPerBar, snapToBeat: alignmentSnapToBeat, onToggleSnap: () => setAlignmentSnapToBeat(v => !v)
+  };
   const importDialog = scoreFile && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center">Opening score importer…</div>}>
     <ScoreImportDialog file={scoreFile} loadedCount={tracks.filter(t => t.audioBuffer).length}
       onClose={() => setScoreFile(null)} onImport={handleImportScore} />
+  </Suspense>;
+  const libraryDialog = libraryOpen && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center">Opening Library…</div>}>
+    <LibraryDialog currentSongTitle={currentLibraryTitle} hasTracks={tracks.some(t => t.audioBuffer)} onClose={() => setLibraryOpen(false)} onLoad={handleLoadLibrarySong} />
   </Suspense>;
 
   if (isMobile) {
@@ -1419,6 +1556,7 @@ export function App() {
         practice={practiceProps}
         tuner={tunerProps}
         training={trainingProps}
+        alignment={alignmentProps}
         visualizer={visualizerProps}
         timeline={timelineProps}
         trackList={trackListProps}
@@ -1426,6 +1564,7 @@ export function App() {
         review={reviewProps}
       />
       {importDialog}
+      {libraryDialog}
     </>);
   }
 
@@ -1446,6 +1585,7 @@ export function App() {
       )}
 
       {/* Main Pitch Visualizer Canvas */}
+      <TrackAlignmentPanel {...alignmentProps} />
       <div className="flex-1 min-h-0 relative flex flex-col">
         <VisualizerCanvas {...visualizerProps} />
         <CanvasOverlays {...overlayProps} uploadHint="into the track slots below, or import a MuseScore score" />
@@ -1457,6 +1597,7 @@ export function App() {
       {/* Audio tracks, score import, and mixer controls */}
       <TrackList {...trackListProps} />
       {importDialog}
+      {libraryDialog}
     </div>
   );
 }

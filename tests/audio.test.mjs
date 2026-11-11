@@ -137,6 +137,57 @@ test('count-in and half-speed transport retain the silent part and synchronized 
   assert.ok(Math.abs(mixer.getCurrentTime() - 2) < 1e-9);
 });
 
+test('delayed parts are scheduled at their own start and seek into the correct source position', () => {
+  const tracks = [track(0), track(1, { startOffset: 8 })];
+  const { mixer, ctx } = setup(tracks);
+  mixer.playAll(tracks);
+  assert.deepEqual(ctx.sources.map(s => s.startArgs), [[0.06, 0], [8.06, 0]]);
+  mixer.playAll(tracks, 5);
+  assert.deepEqual(ctx.sources.slice(-2).map(s => s.startArgs), [[0.06, 5], [3.06, 0]]);
+  mixer.playAll(tracks, 10);
+  assert.deepEqual(ctx.sources.slice(-2).map(s => s.startArgs), [[0.06, 10], [0.06, 2]]);
+  ctx.currentTime = 100;
+  assert.equal(mixer.getCurrentTime(), 20);
+});
+
+test('negative offsets skip source audio and wholly trimmed files cannot start playback', () => {
+  const tracks = [track(0, { startOffset: -3 })];
+  const { mixer, ctx } = setup(tracks);
+  mixer.playAll(tracks);
+  assert.deepEqual(ctx.sources[0].startArgs, [0.06, 3]);
+  ctx.currentTime = 100;
+  assert.equal(mixer.getCurrentTime(), 9);
+  mixer.playAll([track(0, { startOffset: -20 })]);
+  assert.equal(mixer.isPlaying, false);
+});
+
+test('pitch-preserved half-speed buffers use scaled source offsets and entrance delays', async () => {
+  const tracks = [track(0, { startOffset: -2 }), track(1, { startOffset: 8 })];
+  const { mixer, ctx } = setup(tracks);
+  ctx.createBuffer = (channels, length, sampleRate) => {
+    const data = Array.from({ length: channels }, () => new Float32Array(length));
+    return { duration: length / sampleRate, length, sampleRate, numberOfChannels: channels,
+      getChannelData: c => data[c], copyToChannel: (values, c) => data[c].set(values) };
+  };
+  tracks.forEach(t => { t.audioBuffer = ctx.createBuffer(1, 12000, 1000); });
+  await mixer.prepareRate(tracks.map(t => t.audioBuffer), 0.5);
+  mixer.playbackRate = 0.5;
+  mixer.playAll(tracks);
+  assert.deepEqual(ctx.sources.map(s => s.startArgs), [[0.06, 4], [16.06, 0]]);
+  assert.equal(ctx.sources[0].buffer.duration, 24);
+  mixer.playAll(tracks, 10);
+  assert.deepEqual(ctx.sources.at(-1).startArgs, [0.06, 4]);
+});
+
+test('a silent training target can enter late while the backing voice starts immediately', () => {
+  const tracks = [track(0, { startOffset: 8, solo: true }), track(1)];
+  const { mixer, ctx, gains } = setup(tracks);
+  mixer.trainingTrackIndex = 0;
+  mixer.playAll(tracks);
+  assert.deepEqual(gains(), [0, 0.8]);
+  assert.deepEqual(ctx.sources.map(s => s.startArgs), [[8.06, 0], [0.06, 0]]);
+});
+
 const frame = midi => ({ frequency: 440 * 2 ** ((midi - 69) / 12), exactMidi: midi, voiced: true, noteName: 'A4' });
 test('pitch feedback distinguishes in-tune, flat, sharp, and resting reference frames', () => {
   const comparator = new PitchComparator();

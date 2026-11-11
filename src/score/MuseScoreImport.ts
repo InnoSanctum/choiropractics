@@ -103,9 +103,9 @@ export function parseMuseScore(xml: string): ParsedScore {
       const fallback = staves[nextStaff++];
       return (def.attrs.id && staves.find(s => s.attrs.id === def.attrs.id)) || fallback;
     }).filter((s): s is XmlNode => !!s);
-    if ((instrumentNode && value(instrumentNode, 'useDrumset') === '1') || definitions.some(s => child(s, 'StaffType')?.attrs.group === 'percussion')) {
+    const unpitched = !!((instrumentNode && value(instrumentNode, 'useDrumset') === '1') || definitions.some(s => child(s, 'StaffType')?.attrs.group === 'percussion'));
+    if (unpitched) {
       warnings.add(`${name}: unpitched percussion is omitted; this importer renders pitched rehearsal audio.`);
-      continue;
     }
     const notes: ScoreNote[] = [];
     for (const staff of partStaves) {
@@ -149,14 +149,17 @@ export function parseMuseScore(xml: string): ParsedScore {
             }
             if (event.tag === 'MeasureRepeat' || event.tag === 'RepeatMeasure') throw new Error('Expand measure-repeat symbols in MuseScore before importing.');
             if (event.tag !== 'Chord' && event.tag !== 'Rest') continue;
-            if (event.children.some(n => /^(grace|acciaccatura|appoggiatura)/i.test(n.tag))) throw new Error(`Grace notes in ${name} need to be written as ordinary notes before importing.`);
+            if (event.children.some(n => /^(grace|acciaccatura|appoggiatura)/i.test(n.tag))) {
+              if (unpitched) continue;
+              throw new Error(`Grace notes in ${name} need to be written as ordinary notes before importing.`);
+            }
             if (descendants(event, 'Tremolo').length || descendants(event, 'Ornament').length) warnings.add('Ornaments and tremolos use their written pitches and durations.');
             const type = value(event, 'durationType', 'quarter');
             let duration = type === 'measure' ? info.length : value(event, 'duration') ? 4 * fraction(value(event, 'duration')) : durations[type];
             if (!duration) throw new Error(`Unsupported duration ${type} in ${name}.`);
             if (type !== 'measure') duration *= (2 - 2 ** -numeric(event, 'dots', 0)) * ratio(value(event, 'Tuplet'));
             if (!Number.isFinite(cursor) || cursor < info.start - EPS || cursor + duration > info.start + info.length + EPS) throw new Error(`The rhythms in ${name}, measure ${mi + 1}, exceed the measure length. Check voice locations and tuplets in MuseScore.`);
-            if (event.tag === 'Chord') {
+            if (event.tag === 'Chord' && !unpitched) {
               for (const noteNode of children(event, 'Note')) {
                 if (value(noteNode, 'play') === '0') continue;
                 // MuseScore's stored MIDI pitch is sounding pitch; clefs/transposition are display data.
@@ -182,7 +185,7 @@ export function parseMuseScore(xml: string): ParsedScore {
       }
       if (tiePending.size) warnings.add(`${name}: a tie at the end of the score has no following note.`);
     }
-    parts.push({ id: `part-${partIndex}`, name, instrument, notes, ...classifyPart(name, instrument, notes) });
+    if (!unpitched) parts.push({ id: `part-${partIndex}`, name, instrument, notes, ...classifyPart(name, instrument, notes) });
   }
   if (!parts.length) throw new Error('No pitched parts were found in the score.');
   if (parts.reduce((n, p) => n + p.notes.length, 0) > 200_000) throw new Error('The score contains too many notes to import in one session.');

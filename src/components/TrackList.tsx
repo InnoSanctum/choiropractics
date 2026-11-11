@@ -1,7 +1,8 @@
 import React, { useRef } from 'react';
-import { Upload, Star, Trash2, Filter, Loader2, Eye, EyeOff, Plus } from 'lucide-react';
+import { Upload, Star, Trash2, Filter, Loader2, Eye, EyeOff, Plus, BookOpen, MoveHorizontal } from 'lucide-react';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
 import { MAX_TRACKS } from '../score/types';
+import { trackOffset } from '../audio/TrackTiming';
 
 export interface TrackListProps {
   tracks: AudioTrackState[];
@@ -10,6 +11,10 @@ export interface TrackListProps {
   onToggleVisibility: (index: number) => void;
   onAddTrack: () => void;
   onImportScore: (file: File) => void;
+  onOpenLibrary: () => void;
+  onAlignTrack: (index: number) => void;
+  aligningTrackIndex?: number | null;
+  librarySongTitle?: string;
   importDisabled?: boolean;
   onUploadFile: (index: number, file: File) => void;
   onToggleMute: (index: number) => void;
@@ -32,6 +37,10 @@ export const TrackList: React.FC<TrackListProps> = ({
   onToggleVisibility,
   onAddTrack,
   onImportScore,
+  onOpenLibrary,
+  onAlignTrack,
+  aligningTrackIndex,
+  librarySongTitle,
   importDisabled,
   onUploadFile,
   onToggleMute,
@@ -51,9 +60,10 @@ export const TrackList: React.FC<TrackListProps> = ({
   return (
     <div className="mx-4 my-2 flex flex-col gap-1.5 shrink-0 max-h-[32vh] overflow-y-auto">
       {/* Header & analysis filter */}
-      <div className="flex items-center justify-between text-xs px-1 text-slate-400">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1 text-slate-400">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="font-bold uppercase tracking-wider text-[11px] text-slate-300">Tracks ({tracks.filter(t => t.audioBuffer).length}/{MAX_TRACKS})</span>
+          <button onClick={onOpenLibrary} disabled={importDisabled} className="flex items-center gap-1 px-2 py-1 rounded bg-cyan-900 text-cyan-100 disabled:opacity-40"><BookOpen className="w-3.5 h-3.5" />Library</button>
           <button onClick={onAddTrack} disabled={tracks.length >= MAX_TRACKS} className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 disabled:opacity-40" title="Add an audio track"><Plus className="w-3.5 h-3.5" />Track</button>
           <button onClick={() => scoreInput.current?.click()} disabled={importDisabled} className="px-2 py-1 rounded bg-indigo-900 text-indigo-100 disabled:opacity-40">Import score</button>
           <input ref={scoreInput} type="file" accept=".mscz,.mscx" aria-label="Import MuseScore file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onImportScore(f); e.target.value = ''; }} />
@@ -86,6 +96,7 @@ export const TrackList: React.FC<TrackListProps> = ({
         </div>
       </div>
 
+      {librarySongTitle && <div className="text-sm font-semibold text-cyan-200 px-1 truncate" title={librarySongTitle}>{librarySongTitle}</div>}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5">
         {tracks.map((track) => {
           const hasAudio = !!track.audioBuffer;
@@ -143,6 +154,7 @@ export const TrackList: React.FC<TrackListProps> = ({
                     {track.index === trainingTrackIndex && <span className="text-indigo-300 mr-1">Sing · silent</span>}
                     {track.name}
                     <span className="font-normal text-slate-500 font-mono ml-1.5">{track.duration.toFixed(1)}s</span>
+                    {trackOffset(track) !== 0 && <span className="text-cyan-300 font-mono ml-1">{trackOffset(track) > 0 ? '+' : ''}{trackOffset(track)}s</span>}
                   </span>
                   <button
                     onClick={() => onSetMainTrack(track.index)}
@@ -162,6 +174,11 @@ export const TrackList: React.FC<TrackListProps> = ({
                     title={trainingMode ? 'Training shows only the selected part' : 'Toggle diagram visibility'}
                     className="w-6 h-6 shrink-0 rounded flex items-center justify-center text-cyan-300 bg-slate-800 disabled:opacity-50">
                     {(trainingMode ? track.index === trainingTrackIndex : track.visible !== false) ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                  </button>
+                  <button onClick={() => onAlignTrack(track.index)} aria-label={`Align ${track.name}`}
+                    title={`Move this part on the timeline (start ${trackOffset(track)}s)`}
+                    className={`w-6 h-6 shrink-0 rounded flex items-center justify-center ${aligningTrackIndex === track.index ? 'bg-cyan-700 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                    <MoveHorizontal className="w-3.5 h-3.5" />
                   </button>
                   <button
                     onClick={() => onToggleMute(track.index)}

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/audio.test.mjs tests/score.test.mjs",
+    "test": "node --test tests/audio.test.mjs tests/score.test.mjs tests/library.test.mjs tests/timing.test.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

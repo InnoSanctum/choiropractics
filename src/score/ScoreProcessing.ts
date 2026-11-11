@@ -32,7 +32,8 @@ export function classifyPart(name: string, instrument: string, notes: ScoreNote[
   const vocalMetadata = /(^|[.\s_-])(voice|voices|choir|vocal)([.\s_-]|$)/.test(metadata)
     || /^(soprano|alto|tenor|baritone|bass)$/.test(metadata.split(/\s+/)[0]);
   const instrumentName = /\b(piano|pianoforte|guitar|accordion|accordeon|organ|harp|keyboard|synth|celesta|clav|trumpet|trombone|tuba|horn|flute|piccolo|clarinet|oboe|bassoon|sax|saxophone|violin|viola|cello|violoncello|contrabass|double bass|electric bass|bass guitar|percussion|drum|timpani|marimba|xylophone|vibraphone|euphonium|cornet|flugelhorn|strings)\b/.test(label);
-  const instrumentalMetadata = !!metadata && !vocalMetadata && !/^(unknown|generic|instrument|part|staff)$/.test(metadata);
+  const primaryInstrument = metadata.split(/\s+/)[0];
+  const instrumentalMetadata = !!metadata && !vocalMetadata && !/^(unknown|generic|instrument|part|staff|untitled)(?:[._-]*\d+)?$/.test(primaryInstrument);
   // Explicit instrument names win over words such as "alto" in "Alto Saxophone".
   if (instrumentName || (!vocalName && instrumentalMetadata)) {
     return { kind: 'instrument', maxPolyphony, strategy: 'keep', reason: 'Named instrument: keep the complete part together.' };

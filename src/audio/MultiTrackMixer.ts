@@ -12,6 +12,7 @@
 import { PitchFrame, PraatPitchEngine } from './PraatPitchEngine';
 import { timeStretch } from './TimeStretch';
 import { ScoreNote } from '../score/types';
+import { songDuration, sourcePlacement } from './TrackTiming';
 
 export interface AudioTrackState {
   id: string;
@@ -25,12 +26,17 @@ export interface AudioTrackState {
   scoreNotes?: ScoreNote[];
   isPolyphonic?: boolean;
   source?: 'audio' | 'score';
+  librarySongId?: string;
+  librarySongTitle?: string;
+  libraryPartUrl?: string;
   solo: boolean;
   color: string;        // Hex color for note grid curve
   isMain: boolean;      // Main reference target for pitch comparison
   isAnalyzing: boolean;
   analysisProgress: number; // 0 to 100%
   duration: number;
+  /** Song time at which the source starts; negative values trim its beginning. */
+  startOffset?: number;
 }
 
 export interface MetronomeSettings {
@@ -223,12 +229,8 @@ export class MultiTrackMixer {
     const ctx = this.getAudioContext();
     this.stopAllSources();
 
-    let maxDur = 0;
-    for (const t of tracks) {
-      if (t.audioBuffer && t.audioBuffer.duration > maxDur) {
-        maxDur = t.audioBuffer.duration;
-      }
-    }
+    this.isPlaying = false;
+    const maxDur = songDuration(tracks);
     this.maxDuration = maxDur;
     if (maxDur === 0) return;
 
@@ -248,7 +250,9 @@ export class MultiTrackMixer {
     const rate = this.activeRate;
     const key = this.rateKey(rate);
     for (const track of tracks) {
-      if (!track.audioBuffer || this.startOffset >= track.audioBuffer.duration) continue;
+      if (!track.audioBuffer) continue;
+      const placement = sourcePlacement(track, this.startOffset, rate);
+      if (!placement) continue;
       const channel = this.trackNodes.get(track.index);
       if (!channel) continue;
 
@@ -257,17 +261,17 @@ export class MultiTrackMixer {
       if (Math.abs(rate - 1) < 1e-6) {
         source.buffer = track.audioBuffer;
         source.connect(channel.gain);
-        source.start(startAt, this.startOffset);
+        source.start(startAt + placement.delay, placement.sourceOffset);
       } else if (stretched) {
         source.buffer = stretched;
         source.connect(channel.gain);
-        source.start(startAt, this.startOffset / rate);
+        source.start(startAt + placement.delay, placement.sourceOffset / rate);
       } else {
         // Stretched copy not ready yet: fall back to resampling (pitch shifts)
         source.buffer = track.audioBuffer;
         source.playbackRate.value = rate;
         source.connect(channel.gain);
-        source.start(startAt, this.startOffset);
+        source.start(startAt + placement.delay, placement.sourceOffset);
       }
       channel.source = source;
     }

@@ -32,6 +32,7 @@ export class BatchPitchExtractor {
       highCut?: number;
       timeStep?: number; // Step between frames in seconds (default 0.01s = 10ms)
       onProgress?: (p: BatchExtractionProgress) => void;
+      signal?: AbortSignal;
     } = {}
   ): Promise<PitchFrame[]> {
     const {
@@ -40,6 +41,7 @@ export class BatchPitchExtractor {
       timeStep = 0.01,
       onProgress
     } = options;
+    options.signal?.throwIfAborted();
 
     const sampleRate = audioBuffer.sampleRate;
     const numChannels = audioBuffer.numberOfChannels;
@@ -119,10 +121,12 @@ export class BatchPitchExtractor {
         const percent = 25 + Math.round((f / totalFrames) * 60);
         onProgress?.({ percent, stage: `Analyzing frames: ${f}/${totalFrames}` });
         await new Promise(resolve => setTimeout(resolve, 0));
+        options.signal?.throwIfAborted();
       }
     }
 
     // 4. Pitch path clean-up (blips, dropouts, isolated octave jumps)
+    options.signal?.throwIfAborted();
     onProgress?.({ percent: 90, stage: 'Smoothing pitch path...' });
     const smoothedFrames = BatchPitchExtractor.cleanPitchPath(rawFrames);
 

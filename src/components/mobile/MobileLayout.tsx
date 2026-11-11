@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Play, Pause, Square, Mic, MicOff, ListMusic, Music, Gauge, Settings, X, Trash2, Headphones
+  Play, Pause, Square, Mic, MicOff, ListMusic, Music, Gauge, Settings, X, Trash2, Headphones, BookOpen
 } from 'lucide-react';
 import { TopBarProps } from '../TopBar';
 import { CoachingHUDProps, PrecisionSlider } from '../CoachingHUD';
@@ -8,6 +8,7 @@ import { HarmonyPanel, HarmonyPanelProps } from '../HarmonyPanel';
 import { PracticePanel, PracticePanelProps } from '../PracticePanel';
 import { TunerPanel, TunerPanelProps } from '../TunerPanel';
 import { TrainingPanel, TrainingPanelProps } from '../TrainingPanel';
+import { TrackAlignmentPanel, TrackAlignmentPanelProps } from '../TrackAlignmentPanel';
 import { VisualizerCanvas, VisualizerCanvasProps } from '../VisualizerCanvas';
 import { TimelineScrollbar, TimelineScrollbarProps } from '../TimelineScrollbar';
 import { TrackListProps } from '../TrackList';
@@ -25,6 +26,7 @@ export interface MobileLayoutProps {
   practice: PracticePanelProps;
   tuner: TunerPanelProps;
   training: TrainingPanelProps;
+  alignment: TrackAlignmentPanelProps;
   visualizer: VisualizerCanvasProps;
   timeline: TimelineScrollbarProps;
   trackList: TrackListProps;
@@ -52,6 +54,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
   practice,
   tuner,
   training,
+  alignment,
   visualizer,
   timeline,
   trackList,
@@ -164,6 +167,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
       )}
 
       {/* Diagram + sheets */}
+      <TrackAlignmentPanel {...alignment} />
       <div className="flex-1 min-h-0 relative flex flex-col">
         <VisualizerCanvas {...visualizer} />
         <CanvasOverlays {...overlays} showWelcome={overlays.showWelcome && sheet === null} uploadHint="in the Tracks tab" />
@@ -179,7 +183,7 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
                 </button>
               </div>
               <div className="overflow-y-auto overscroll-contain px-4 pb-4">
-                {sheet === 'tracks' && <MobileTrackList {...trackList} />}
+                {sheet === 'tracks' && <MobileTrackList {...trackList} onAlignTrack={index => { trackList.onAlignTrack(index); setSheet(null); }} />}
                 {sheet === 'harmony' && <HarmonyPanel {...harmony} embedded />}
                 {sheet === 'practice' && <PracticePanel {...practice} embedded />}
                 {sheet === 'settings' && (
@@ -274,6 +278,10 @@ export const MobileLayout: React.FC<MobileLayoutProps> = ({
 
       {/* Bottom tabs */}
       <nav className="flex shrink-0 border-t border-slate-800 bg-slate-900/95 pb-[env(safe-area-inset-bottom)]">
+        <button onClick={trackList.onOpenLibrary} disabled={trackList.importDisabled}
+          className={`flex-1 ${short ? 'h-10 flex-row gap-1.5 text-xs' : 'h-14 flex-col gap-0.5 text-[10px]'} flex items-center justify-center font-semibold text-slate-400 disabled:opacity-40`}>
+          <BookOpen className="w-5 h-5" />Library
+        </button>
         {tabs.map(tab => (
           <button
             key={tab.id}

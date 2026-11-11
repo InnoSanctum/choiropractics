@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { NoteGridRenderer, RendererOptions, NOTE_AXIS_WIDTH, MicTake } from '../visualizer/NoteGridRenderer';
 import { AudioTrackState } from '../audio/MultiTrackMixer';
+import { dragTrackOffset, trackOffset } from '../audio/TrackTiming';
 
 export interface VisualizerCanvasProps {
   tracks: AudioTrackState[];
@@ -16,6 +17,9 @@ export interface VisualizerCanvasProps {
   onScrollBy?: (deltaSeconds: number) => void;
   /** Zoom by a factor (>1 = zoom in) keeping `anchorTime` at the same screen position. */
   onZoomAt?: (factor: number, anchorTime: number) => void;
+  aligningTrackIndex?: number | null;
+  onMoveTrack?: (index: number, offset: number, commit: boolean) => void;
+  moveSnapSeconds?: number;
 }
 
 export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
@@ -25,17 +29,21 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   liveClockStart,
   onSeek,
   onScrollBy,
-  onZoomAt
+  onZoomAt,
+  aligningTrackIndex = null,
+  onMoveTrack,
+  moveSnapSeconds = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<NoteGridRenderer | null>(null);
 
   // Latest props for the render loop and native event handlers (avoids re-subscribing every frame)
-  const latest = useRef({ tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt });
-  latest.current = { tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt };
+  const latest = useRef({ tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt, aligningTrackIndex, onMoveTrack, moveSnapSeconds });
+  latest.current = { tracks, takes, options, liveClockStart, onSeek, onScrollBy, onZoomAt, aligningTrackIndex, onMoveTrack, moveSnapSeconds };
 
-  const [dragMode, setDragMode] = useState<'none' | 'seek' | 'pan'>('none');
+  const [dragMode, setDragMode] = useState<'none' | 'seek' | 'pan' | 'move'>('none');
+  const offsetDrag = useRef<{ pointerId: number; index: number; startX: number; startOffset: number; lastOffset: number; secondsPerPixel: number; snap: number } | null>(null);
   const lastMouseXRef = useRef<number>(0);
 
   // Initialize renderer
@@ -209,6 +217,16 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || liveClockStart != null) return;
+    const current = latest.current;
+    const moving = current.tracks.find(t => t.index === current.aligningTrackIndex && t.audioBuffer);
+    if (moving && current.onMoveTrack && !e.altKey && !e.shiftKey && e.button !== 1 && e.clientX - canvas.getBoundingClientRect().left >= NOTE_AXIS_WIDTH) {
+      if (offsetDrag.current) return;
+      e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
+      const offset = trackOffset(moving);
+      offsetDrag.current = { pointerId: e.pointerId, index: moving.index, startX: e.clientX, startOffset: offset, lastOffset: offset,
+        secondsPerPixel: current.options.visibleDuration / plotWidthPx(), snap: current.moveSnapSeconds };
+      setDragMode('move'); return;
+    }
     if (e.pointerType === 'touch') {
       handleTouchDown(e);
       return;
@@ -234,6 +252,14 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const moving = offsetDrag.current;
+    if (moving) {
+      if (moving.pointerId === e.pointerId) {
+        moving.lastOffset = dragTrackOffset(moving.startOffset, e.clientX - moving.startX, moving.secondsPerPixel, moving.snap);
+        latest.current.onMoveTrack?.(moving.index, moving.lastOffset, false);
+      }
+      return;
+    }
     if (e.pointerType === 'touch') {
       handleTouchMove(e);
       return;
@@ -253,6 +279,14 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const moving = offsetDrag.current;
+    if (moving && moving.pointerId === e.pointerId) {
+      offsetDrag.current = null;
+      latest.current.onMoveTrack?.(moving.index, e.type === 'pointercancel' ? moving.startOffset : moving.lastOffset, true);
+      setDragMode('none');
+      try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* Already released. */ }
+      return;
+    }
     if (e.pointerType === 'touch') {
       handleTouchUp(e);
       return;
@@ -265,6 +299,8 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
     }
   };
 
+  const aligningTrack = tracks.find(t => t.index === aligningTrackIndex);
+  const entryFraction = aligningTrack ? (trackOffset(aligningTrack) - options.timeOffset) / options.visibleDuration : -1;
   return (
     <div ref={containerRef} data-diagram className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
       <canvas
@@ -273,11 +309,23 @@ export const VisualizerCanvas: React.FC<VisualizerCanvasProps> = ({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onLostPointerCapture={e => {
+          const moving = offsetDrag.current;
+          if (moving?.pointerId === e.pointerId) {
+            offsetDrag.current = null; setDragMode('none');
+            latest.current.onMoveTrack?.(moving.index, moving.lastOffset, true);
+          }
+        }}
         onAuxClick={(e) => e.preventDefault()}
         style={{ touchAction: 'none' }}
-        className={`w-full h-full block ${dragMode === 'pan' ? 'cursor-grabbing' : 'cursor-crosshair'}`}
-        title="Click/drag: seek · Wheel: scroll · Ctrl+Wheel / pinch: zoom · Shift/Alt/middle-drag: pan"
+        className={`w-full h-full block ${dragMode === 'pan' ? 'cursor-grabbing' : aligningTrack ? 'cursor-ew-resize' : 'cursor-crosshair'}`}
+        title={aligningTrack ? `Drag to move ${aligningTrack.name}. Alt/Shift/middle-drag to pan.` : 'Click/drag: seek · Wheel: scroll · Ctrl+Wheel / pinch: zoom · Shift/Alt/middle-drag: pan'}
       />
+      {aligningTrack && entryFraction >= 0 && entryFraction <= 1 && <div className="absolute inset-y-0 right-0 pointer-events-none overflow-hidden" style={{ left: NOTE_AXIS_WIDTH }}>
+        <div className="absolute inset-y-0 border-l border-dashed" style={{ left: `${entryFraction * 100}%`, borderColor: aligningTrack.color }}>
+          <span className="absolute top-5 left-1 text-[10px] font-mono whitespace-nowrap px-1 rounded bg-slate-950/80" style={{ color: aligningTrack.color }}>{aligningTrack.name} · {trackOffset(aligningTrack)}s</span>
+        </div>
+      </div>}
     </div>
   );
 };

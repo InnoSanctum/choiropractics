@@ -53,6 +53,7 @@ test('author names and instrument metadata take precedence over polyphony heuris
   assert.equal(classifyPart('Part 1', 'piano', notes).strategy, 'keep');
   assert.equal(classifyPart('Untitled', '', notes).strategy, 'keep');
   assert.equal(classifyPart('Untitled', '', notes.slice(0, 3)).strategy, 'split');
+  assert.equal(classifyPart('Part 1', 'unknown Unknown', notes.slice(0, 2)).strategy, 'split');
 });
 
 test('SATB plus a two-staff piano becomes six tracks, with all piano notes retained', () => {
@@ -124,6 +125,25 @@ test('a repeat jump before the first tempo mark restores the chosen fallback tem
   assert.equal(buildScoreTracks(score, {}, 120)[0].duration, 12);
 });
 
+test('nested repeats preserve the complete shared performance order', () => {
+  const score = basic(measure(`<startRepeat/>${chord(60, 'whole')}`)
+    + measure(`<startRepeat/>${chord(62, 'whole')}<endRepeat>2</endRepeat>`)
+    + measure(`${chord(64, 'whole')}<endRepeat>2</endRepeat>`));
+  const tracks = buildScoreTracks(score, {}, 120);
+  assert.deepEqual(tracks[0].notes.map(n => n.midi), [60, 62, 62, 64, 60, 62, 62, 64]);
+  assert.equal(tracks[0].duration, 16);
+});
+
+test('tempo markings on an omitted percussion part still govern all pitched parts', () => {
+  const score = parseMuseScore(document([
+    { name: 'Drums', instrument: 'drums', instrumentExtra: '<useDrumset>1</useDrumset>', music: measure(`<Tempo><tempo>1</tempo></Tempo>${chord(36, 'whole')}`) },
+    { name: 'S', music: measure(chord(60, 'whole')) }
+  ]));
+  assert.equal(score.parts.length, 1);
+  assert.match(score.warnings[0], /percussion is omitted/);
+  assert.equal(buildScoreTracks(score, {}, 120)[0].duration, 4);
+});
+
 test('ties across barlines retain one sustained note; repeated articulated notes remain separate', () => {
   const tied = `<Chord><durationType>whole</durationType><Note><pitch>60</pitch><Spanner type="Tie"><next><location><measures>1</measures></location></next></Spanner></Note><Note><pitch>64</pitch><Tie id="1"/></Note></Chord>`;
   const score = basic(measure(tied) + measure(chord([60, 64], 'whole')) + measure(chord(60) + chord(60)));
@@ -168,6 +188,9 @@ test('aaah rendering produces decodable PCM with the expected pitch, rests, and 
   assert.ok(Math.abs(found.frequency - 440) < 1, `Detected ${found.frequency} Hz`);
   const abort = new AbortController(); abort.abort();
   await assert.rejects(renderScoreTrack(track, context, abort.signal, () => {}), { name: 'AbortError' });
+  const runningAbort = new AbortController();
+  const long = { ...track, duration: 30, notes: [note('long', 69, 0, 30)] };
+  await assert.rejects(renderScoreTrack(long, context, runningAbort.signal, () => runningAbort.abort()), { name: 'AbortError' });
 });
 
 test('visibility is independent from mute, training forces only its target, and practice settings survive', () => {

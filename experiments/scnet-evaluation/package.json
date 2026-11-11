@@ -1,0 +1,20 @@
+{
+  "name": "choiropractics-scnet-evaluation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "samples:prepare": "node prepare.mjs",
+    "evaluate": "python monitor.py",
+    "report": "node report.mjs",
+    "library:prepare": "node library-prepare.mjs",
+    "library:run": "python library-runner.py",
+    "library:build": "node library-build.mjs",
+    "test": "node --test library-separate.test.mjs library-encode.test.mjs library-build.test.mjs"
+  },
+  "dependencies": {
+    "@audio/neural-separate": "0.7.0",
+    "@ffmpeg-installer/win32-x64": "4.1.0",
+    "mpg123-decoder": "1.0.3",
+    "onnxruntime-node": "1.24.3"
+  }
+}
